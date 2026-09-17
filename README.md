@@ -37,6 +37,23 @@ services. It does not restart Postfix, Rspamd, Dovecot, rsyslog, SSH, firewall
 or network services. Existing Apache integration is validated and reloaded only
 when its SendmailAnalyzer configuration actually changes.
 
+## Repository layout
+
+The source tree is organized by responsibility:
+
+- `bin/` — collection, diagnostic, database, migration and administrative commands.
+- `config/` — application, Apache and runtime configuration templates.
+- `debian/` — Debian packaging metadata, build rules and maintainer scripts.
+- `docs/` — installation, configuration, operations, security, migration and design documentation.
+- `examples/` — synthetic public examples and parser fixtures.
+- `lib/` — core Perl implementation.
+- `lib/SendmailAnalyzer/Parser/` — Postfix, Postscreen, Rspamd, SpamAssassin, ClamAV, Dovecot, OpenDKIM and OpenDMARC parsers.
+- `lib/SendmailAnalyzer/Storage/` — SQLite persistence layer.
+- `scripts/` — build and source-installation helpers.
+- `systemd/` — systemd service and timer unit templates.
+- `t/` — automated test suite and public-release hygiene checks.
+- `web/` — web interface, static assets and HTTP-facing resources.
+
 ## Web interface
 
 The web interface keeps the useful report organization associated with classic
