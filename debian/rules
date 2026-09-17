@@ -1,0 +1,53 @@
+#!/usr/bin/make -f
+
+PACKAGE := sendmailanalyzer
+VERSION := $(shell dpkg-parsechangelog -SVersion)
+PKGDIR := debian/$(PACKAGE)
+OUT := ../$(PACKAGE)_$(VERSION)_all.deb
+SOURCE_DATE_EPOCH ?= 1789627500
+export SOURCE_DATE_EPOCH
+
+.PHONY: clean build binary binary-arch binary-indep
+
+clean:
+	rm -rf $(PKGDIR) debian/files debian/*.substvars debian/*.debhelper debian/build-stamp
+
+build:
+	@if ! echo " $(DEB_BUILD_OPTIONS) " | grep -q ' nocheck '; then \
+		prove -Ilib t; \
+	else \
+		echo 'Tests disabled by DEB_BUILD_OPTIONS=nocheck'; \
+	fi
+	touch debian/build-stamp
+
+binary-indep: build
+	rm -rf $(PKGDIR)
+	install -d $(PKGDIR)/DEBIAN $(PKGDIR)/usr/lib/sendmailanalyzer $(PKGDIR)/usr/bin $(PKGDIR)/etc $(PKGDIR)/etc/sendmailanalyzer.d
+	install -d $(PKGDIR)/lib/systemd/system $(PKGDIR)/usr/lib/tmpfiles.d
+	install -d $(PKGDIR)/usr/share/doc/$(PACKAGE) $(PKGDIR)/usr/share/$(PACKAGE)/examples $(PKGDIR)/usr/share/$(PACKAGE)/defaults
+	cp -a lib web bin $(PKGDIR)/usr/lib/sendmailanalyzer/
+	@for b in bin/*; do ln -s ../lib/sendmailanalyzer/bin/$$(basename $$b) $(PKGDIR)/usr/bin/$$(basename $$b); done
+	install -m 0644 config/sendmailanalyzer.conf $(PKGDIR)/etc/sendmailanalyzer.conf
+	install -m 0644 config/sendmailanalyzer-rspamd.tmpfiles $(PKGDIR)/usr/lib/tmpfiles.d/sendmailanalyzer-rspamd.conf
+	install -m 0644 systemd/*.service $(PKGDIR)/lib/systemd/system/
+	install -m 0644 README.md CHANGELOG-v10.md NOTICE LICENSE docs/*.md config/apache2-sendmailanalyzer.conf debian/README.Debian $(PKGDIR)/usr/share/doc/$(PACKAGE)/
+	install -m 0644 debian/copyright $(PKGDIR)/usr/share/doc/$(PACKAGE)/copyright
+	gzip -n -9 -c debian/changelog > $(PKGDIR)/usr/share/doc/$(PACKAGE)/changelog.Debian.gz
+	cp -a examples/. $(PKGDIR)/usr/share/$(PACKAGE)/examples/
+	install -m 0644 config/sendmailanalyzer.conf $(PKGDIR)/usr/share/$(PACKAGE)/defaults/sendmailanalyzer.conf
+	dpkg-gencontrol -p$(PACKAGE) -P$(PKGDIR)
+	install -m 0755 debian/preinst debian/postinst debian/prerm debian/postrm $(PKGDIR)/DEBIAN/
+	install -m 0644 debian/conffiles $(PKGDIR)/DEBIAN/conffiles
+	find $(PKGDIR) -type d -exec chmod 0755 {} +
+	find $(PKGDIR)/usr/lib/sendmailanalyzer/bin -type f -exec chmod 0755 {} +
+	find $(PKGDIR)/usr/lib/sendmailanalyzer/lib -type f -exec chmod 0644 {} +
+	chmod 0644 $(PKGDIR)/lib/systemd/system/*.service $(PKGDIR)/etc/sendmailanalyzer.conf $(PKGDIR)/usr/lib/tmpfiles.d/sendmailanalyzer-rspamd.conf
+	cd $(PKGDIR) && find usr lib etc -type f -print0 | sort -z | xargs -0 md5sum > DEBIAN/md5sums
+	find $(PKGDIR) -print0 | xargs -0 touch -h -d @$(SOURCE_DATE_EPOCH)
+	dpkg-deb --build --root-owner-group $(PKGDIR) $(OUT)
+	dpkg-distaddfile $(notdir $(OUT)) mail optional
+
+binary-arch:
+	@true
+
+binary: binary-indep

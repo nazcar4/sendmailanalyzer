@@ -1,0 +1,106 @@
+#!/bin/sh
+
+main() {
+    case "${1:-}" in
+        install|upgrade|'') ;;
+        *) return 0 ;;
+    esac
+
+    BACKUP_ROOT=/var/backups/sendmailanalyzer
+
+    # Create the rollback snapshot before stopping anything. This guarantees
+    # that a failed package transition can restore the exact service state that
+    # existed immediately before the upgrade attempt.
+    stamp=$(date +%Y%m%d-%H%M%S)
+    SNAP="$BACKUP_ROOT/preinstall-$stamp"
+    mkdir -p "$SNAP" || return 1
+    chmod 0700 "$SNAP" 2>/dev/null || true
+    printf '%s\n' "$SNAP" > "$BACKUP_ROOT/.active-preinst-backup" || return 1
+
+    # Freeze only SendmailAnalyzer services during the package transition. Do
+    # not restart or stop Postfix/Rspamd/Dovecot/rsyslog/network services.
+    # Record active services first so postinst can restore them automatically if
+    # migration/configuration aborts at any later validation step.
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        : > "$SNAP/runtime-services.active" || return 1
+        for svc in sendmailanalyzer-web.service sendmailanalyzer-collector.service sendmailanalyzer10-web.service sendmailanalyzer10-collector.service sendmailanalyzer.service; do
+            if systemctl is-active --quiet "$svc" 2>/dev/null; then printf '%s\n' "$svc" >> "$SNAP/runtime-services.active" || return 1; fi
+        done
+        systemctl stop sendmailanalyzer-web.service >/dev/null 2>&1 || true
+        systemctl stop sendmailanalyzer-collector.service >/dev/null 2>&1 || true
+        systemctl stop sendmailanalyzer10-web.service >/dev/null 2>&1 || true
+        systemctl stop sendmailanalyzer10-collector.service >/dev/null 2>&1 || true
+        systemctl stop sendmailanalyzer.service >/dev/null 2>&1 || true
+    fi
+
+    # Preserve the authoritative v10 SQLite/state before unpack.  Services are
+    # already stopped, so checkpointing and copying produce a consistent
+    # rollback snapshot.  This is intentionally independent of any 9.4 data.
+    DB=/var/lib/sendmailanalyzer/sendmailanalyzer.sqlite3
+    if [ -e "$DB" ]; then
+        if command -v perl >/dev/null 2>&1; then
+            runuser -u sendmailanalyzer -- perl -MDBI -e '
+                my $f=shift;
+                my $d=DBI->connect("dbi:SQLite:dbname=$f","","",{RaiseError=>1});
+                $d->do("PRAGMA wal_checkpoint(TRUNCATE)");
+                my ($q)=$d->selectrow_array("PRAGMA quick_check");
+                print "Pre-upgrade SQLite quick_check=$q\n";
+                $d->disconnect;
+                die "SQLite pre-upgrade validation failed\n" unless defined($q) && $q eq "ok";
+            ' "$DB" || return 1
+        fi
+        cp --reflink=auto -a "$DB" "$SNAP/sendmailanalyzer.sqlite3.existing" || return 1
+        [ ! -e /var/lib/sendmailanalyzer/collector.state ] || cp -a /var/lib/sendmailanalyzer/collector.state "$SNAP/collector.state.existing" || return 1
+        printf '%s\n' "Preserved production SQLite rollback snapshot: $SNAP/sendmailanalyzer.sqlite3.existing"
+    fi
+
+    # Production v10 config, if this is an upgrade of an already-final package.
+    if [ -e /etc/sendmailanalyzer.conf ]; then
+        cp -a /etc/sendmailanalyzer.conf "$SNAP/sendmailanalyzer.conf.existing" || return 1
+        # A pre-v10 SendmailAnalyzer may already use this canonical pathname.
+        # Move only a legacy config out of dpkg's way; postinst imports the
+        # compatible settings into the documented v10 configuration.
+        if ! grep -Eq '^[[:space:]]*DB_FILE[[:space:]]+' /etc/sendmailanalyzer.conf; then
+            cp -a /etc/sendmailanalyzer.conf "$SNAP/sendmailanalyzer-9.4.conf" || return 1
+            mv /etc/sendmailanalyzer.conf "$SNAP/sendmailanalyzer-9.4.conf.original" || return 1
+        fi
+    fi
+
+    # Temporary parallel v10 packages used before the production package was
+    # finalized.  Preserve config and SQLite state before dpkg replaces them.
+    if [ -e /etc/sendmailanalyzer10.conf ]; then
+        cp -a /etc/sendmailanalyzer10.conf "$SNAP/sendmailanalyzer10.conf" || return 1
+    fi
+    if [ -d /var/lib/sendmailanalyzer10 ]; then
+        if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+            systemctl stop sendmailanalyzer10-web.service >/dev/null 2>&1 || true
+            systemctl stop sendmailanalyzer10-collector.service >/dev/null 2>&1 || true
+        fi
+        cp -a /var/lib/sendmailanalyzer10 "$SNAP/sendmailanalyzer10-state" || return 1
+    fi
+
+    # Common 9.4 configuration location from source/manual installations.
+    if [ -e /usr/local/sendmailanalyzer/sendmailanalyzer.conf ]; then
+        cp -a /usr/local/sendmailanalyzer/sendmailanalyzer.conf "$SNAP/sendmailanalyzer-9.4-local.conf" || return 1
+    fi
+
+    # A package-managed 9.4 upgrade may remove old program/web files during
+    # unpack, before postinst can retire the legacy tree. Save the program tree
+    # now (excluding generated data, which is migrated and backed up after
+    # validation) plus common standalone binaries/CGI.
+    if [ -d /usr/local/sendmailanalyzer ] && command -v tar >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1; then
+        tar -C /usr/local --exclude='sendmailanalyzer/data' -cf - sendmailanalyzer 2>/dev/null | gzip -n > "$SNAP/sendmailanalyzer-9.4-program.preunpack.tar.gz" || return 1
+    fi
+    for f in /usr/bin/sendmailanalyzer /usr/bin/sa_cache /usr/local/bin/sendmailanalyzer /usr/local/bin/sa_cache /usr/lib/cgi-bin/sa_report.cgi; do
+        [ ! -e "$f" ] || cp -a "$f" "$SNAP/$(printf '%s' "$f" | sed 's#^/##; s#/#__#g').legacy" || return 1
+    done
+
+    # Back up integration files before any automatic conversion/removal.
+    for f in /etc/systemd/system/sendmailanalyzer.service /usr/lib/systemd/system/sendmailanalyzer.service /lib/systemd/system/sendmailanalyzer.service /etc/init.d/sendmailanalyzer /etc/cron.d/sendmailanalyzer; do
+        [ ! -e "$f" ] || cp -a "$f" "$SNAP/$(basename "$f").legacy" || return 1
+    done
+    printf '%s\n' "SendmailAnalyzer pre-upgrade backup: $SNAP"
+    return 0
+}
+
+main "$@"

@@ -1,0 +1,224 @@
+sendmailanalyzer (10.0.16-16) stable; urgency=medium
+
+  * Replace remaining production-derived fixture identifiers with synthetic
+    values and neutral host labels.
+  * Rename deployment-oriented parser test files to functional names.
+  * Make public package-installation documentation revision-independent.
+  * Strengthen publication-hygiene regression checks.
+  * Preserve 10.0.16-15 runtime behavior and database/upgrade policy.
+
+ -- Nazcar <nazcar@almogavers.net>  Thu, 17 Sep 2026 08:45:00 +0200
+
+sendmailanalyzer (10.0.16-15) stable; urgency=high
+
+  * Assign a unique Debian revision to the finalized public-hardening build.
+  * Preserve site-local drop-ins under /etc/sendmailanalyzer.d, generic
+    HEADER_ROUTE/HEADER_IGNORE routing, English public documentation/UI,
+    sanitized fixtures and all validated web/database fixes.
+  * Establish an unambiguous baseline for package builds, tags and release assets.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 23:58:00 +0200
+
+sendmailanalyzer (10.0.16-14) stable; urgency=medium
+
+  * Replace site-specific renamed filter headers with standard SpamAssassin,
+    Rspamd and ClamAV headers in the public parser and regression fixtures.
+  * Add /etc/sendmailanalyzer.d site-local drop-ins with generic HEADER_ROUTE
+    and HEADER_IGNORE directives for private Postfix header rewrites.
+  * Disambiguate compact Rspamd and detailed SpamAssassin X-Spam-Status forms,
+    while allowing an explicit site-local route to override the heuristic.
+  * Sanitize production-derived fixtures using RFC example domains and TEST-NET
+    addresses while preserving parser coverage and edge-case semantics.
+  * Convert public documentation, configuration comments and web UI text to
+    English.
+  * Remove the packaged legacy third-party branding image and use text-only
+    SendmailAnalyzer branding.
+  * Harden source-control exclusions and add public-release hygiene regression
+    checks for deployment-specific data and accidental secrets.
+  * Preserve the validated 10.0.16-13 Spam and Rejections web hotfixes, the
+    authoritative v10 SQLite database and the disabled automatic 9.4 import
+    policy.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 21:45:00 +0200
+
+sendmailanalyzer (10.0.16-13) stable; urgency=high
+
+  * Fix the Spam page crash caused by malformed metric/date bind-list
+    initialization in legacy daily aggregate queries.
+  * Fix the Rejects page crash caused by a lexical variable shadowing Perl's
+    special sort comparator variable $a.
+  * Add regression coverage for both production web failures.
+  * No parser, collector, SQLite schema, Apache route or historical data
+    migration behavior is changed by this hotfix.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 21:20:00 +0200
+
+sendmailanalyzer (10.0.16-12) stable; urgency=medium
+
+  * Render months and calendar days without any stored data as disabled text,
+    rather than hyperlinks to empty reports.
+  * Disable Previous/Next when the target day or month has no stored data.
+  * Treat messages, events, authentication, TLS and historical aggregates as
+    valid calendar activity without changing collector/parser/database history.
+  * Preserve all 10.0.16-11 SQLite, Apache, Rspamd and migration safeguards.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 20:15:00 +0200
+
+sendmailanalyzer (10.0.16-11) stable; urgency=high
+
+  * Label messages whose historical envelope sender is unavailable as
+    "Sender unavailable in historical data" instead of the ambiguous "(empty)".
+  * Prevent stale Apache backups in a different site file from reviving
+    deprecated /sareport/ or /sareport10/ routes when /reports/ is active.
+  * Preserve the 10.0.16-10 monthly dashboard, production SQLite, collector,
+    parsers, Rspamd handling, ACLs and automatic-9.4-migration-disabled policy.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 19:30:00 +0200
+
+sendmailanalyzer (10.0.16-10) stable; urgency=high
+
+  * Make month selector buttons open a true whole-month report instead of day 1.
+  * Aggregate flow, distribution, unique parties, top senders/recipients and
+    recent activity across the selected calendar month.
+  * Plot monthly flow/size by day while retaining hourly plots for day views.
+  * Keep unknown historical direction visible as "Unclassified" within monthly totals.
+  * Preserve the production SQLite database and keep automatic 9.4 migration disabled.
+  * Prefer the custom /reports/ Apache route and clean redundant /sareport/ blocks.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 19:20:00 +0200
+
+sendmailanalyzer (10.0.16-9) stable; urgency=high
+
+  * Preserve an existing production SQLite database in place on package upgrades.
+    Automatic SendmailAnalyzer 9.4 historical import is disabled.
+  * Fresh installs initialize an empty v10 SQLite database instead of importing
+    legacy .dat/history.tar.gz data automatically.
+  * Snapshot and quick-check the active SQLite database before unpack; restore
+    that snapshot automatically if post-install validation fails.
+  * Keep the existing collector state, configuration, Apache custom /reports/
+    route/ACLs, HTTP+HTTPS vhosts and all v10 historical data across upgrades.
+  * Legacy 9.4 migration helpers remain available only for explicit/manual use.
+  * Show historical messages with unavailable envelope metadata as "Unclassified"
+    instead of silently reporting zero flow; include them in tables and charts.
+  * Explicitly clear the hourly filter when navigating to another day or month.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 18:05:00 +0200
+
+sendmailanalyzer (10.0.16-8) stable; urgency=high
+
+  * Replace per-FaKe legacy event materialization with bounded per-day/hour
+    aggregates, preserving historical counters without multi-gigabyte WAL growth.
+  * Keep real Postfix Queue-ID messages and their detailed legacy events intact.
+  * Add schema v8 legacy_aggregates storage and merge aggregate rejection, spam,
+    virus, DSN and delivery counters into dashboard statistics.
+  * Add a 512 MiB temporary WAL safety guard during legacy migration and
+    checkpoint/truncate the temporary WAL after each committed legacy day.
+  * Keep journal-based recovery for calendar gaps absent from 9.4 archives,
+    including July/August days retained only in systemd-journald.
+  * Retain one-pass monthly archive extraction, per-day transactions, atomic
+    activation, service recovery and custom /reports/ Apache routing.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 16:40:00 +0200
+
+sendmailanalyzer (10.0.16-7) stable; urgency=high
+
+  * Treat upstream-generated FaKe* identities in senders.dat and rejection
+    side-data as synthetic NOQUEUE/report identities, never queued messages.
+  * Keep legacy rejection events for statistics while clearing synthetic
+    Queue-IDs that do not correspond to a real senders.dat message.
+  * Recover calendar gaps absent from the 9.4 archive from retained systemd
+    journal mail records, replaying each missing day into the temporary SQLite
+    database before activation.
+  * Add first_seen/timestamp indexes for message, recipient, authentication and
+    TLS period views to avoid full-table scans on historical dashboards.
+  * Remove the package default /sareport/ route when a migrated custom
+    production route such as /reports/ already exists.
+  * Retain one-pass history.tar.gz extraction, per-day transactions, Queue-ID
+    generation disambiguation and rollback-on-failure safeguards.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 16:10:00 +0200
+
+sendmailanalyzer (10.0.16-6) stable; urgency=high
+
+  * Replace per-member `tar -xOzf` legacy archive reads with a staged archive
+    cache: each monthly `history.tar.gz` is expanded once for only the selected
+    `.dat` members and released after its final imported entry.
+  * Import each legacy host/day inside one SQLite transaction instead of
+    committing every INSERT/UPDATE independently, drastically reducing WAL and
+    filesystem write amplification during historical migration.
+  * Print archive-extraction and per-day commit progress so package upgrades no
+    longer appear hung while importing substantial 9.4 histories.
+  * Bound temporary extraction disk usage by deleting each staged archive cache
+    as soon as its last selected entry has been consumed; source archives and
+    the active v10 SQLite database remain untouched until final validation.
+  * Retain the Queue-ID generation disambiguation, full `history.tar.gz` import,
+    Apache multi-vhost migration, exact audit, quick-check, rollback database,
+    and postinst service-state recovery from 10.0.16-5.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 13:45:00 +0200
+
+sendmailanalyzer (10.0.16-5) stable; urgency=high
+
+  * Accept legitimate Postfix Queue-ID reuse across different legacy day/host
+    generations instead of blocking a 9.4 migration.
+  * Preserve each reused generation as a distinct internal message identity while
+    keeping the original Queue-ID visible and searchable in the web interface.
+  * Merge a legacy generation into an existing native v10 Queue-ID only when its
+    date matches; otherwise qualify the legacy internal key to prevent corruption.
+  * Upgrade SQLite schema to v6 with display_queue_id support for historical
+    identity preservation.
+  * Record pre-upgrade SendmailAnalyzer service state before stopping collectors
+    and automatically restore previously-active services if postinst fails.
+  * Support direct recovery from a half-configured 10.0.16-4 installation while
+    retaining its intact SQLite database and protected 9.4 backup history.
+  * Keep the complete history.tar.gz import, Apache multi-vhost migration and
+    transactional rollback safeguards from 10.0.16-4.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 13:20:00 +0200
+
+sendmailanalyzer (10.0.16-4) stable; urgency=high
+
+  * Import the complete SendmailAnalyzer 9.4 history, including daily `.dat`
+    evidence stored inside monthly `history.tar.gz` archives created by
+    `FREE_SPACE archive`, not only currently unpacked `.dat` files.
+  * Make archive and live data one normalized legacy source so direct `.dat`
+    files take precedence over duplicate archived day/type entries and repeated
+    upgrades remain idempotent.
+  * Extend migration preflight and exact post-import audit across both active
+    files and archived historical days before a migrated SQLite is activated.
+  * Recover protected 9.4 history from `retired-9.4-*` backups created by the
+    affected 10.0.16-2 revision by staging a private service-readable copy;
+    backup permissions themselves are not weakened.
+  * Keep the 10.0.16-3 Apache/vhost and existing-v10 historical merge fixes;
+    10.0.16-3 is superseded and must not be used for production migration.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 12:15:00 +0200
+
+sendmailanalyzer (10.0.16-3) stable; urgency=medium
+
+  * Fix Apache migration for files containing multiple VirtualHost blocks; preserve the configured report alias and Require ACL independently in HTTP/HTTPS.
+  * Detect already-correct v10 reverse-proxy integrations so upgrades never add a second /sareport/ route.
+  * Recover a missing vhost integration from the package-created Apache rollback copy when upgrading from the affected 10.0.16-2 revision.
+  * Merge the complete SendmailAnalyzer 9.4 historical data set into an existing v10 SQLite database instead of treating an existing database as proof that legacy history was migrated.
+  * Discover 9.4 data automatically in retired-9.4 backups when an earlier v10 revision already moved /usr/local/sendmailanalyzer.
+  * Audit imported 9.4 evidence using legacy-only event semantics and make the historical merge atomic with a rollback SQLite snapshot.
+  * Stop only SendmailAnalyzer collectors during package transition so database/history snapshots are stable; mail and network services are left untouched.
+  * Finalize the classic-modern web layout based on SendmailAnalyzer 9.4.
+  * Open API JSON and Metrics links in a separate browser tab/window.
+  * Add complete inline configuration help and CONFIGURATION.md.
+  * Ship native Debian source packaging under debian/.
+  * Ship the then-current legacy-compatible branding asset inside the v10 package.
+  * Ship the Rspamd log traversal/default ACL as a vendor tmpfiles.d rule.
+  * Install runtime dependencies for SQLite, Plack, ACL handling and systemd.
+  * Repair least-privilege read ACLs for current and rotated mail/Rspamd logs.
+  * Automatically initialize v10 or migrate an existing 9.4 data set on first install.
+  * Replace SendmailAnalyzer 9.4 after successful migration and v10 validation.
+  * Back up the complete manual 9.4 tree and integration files before retirement.
+  * Use the canonical `sendmailanalyzer` package name for direct 9.4 upgrades and Conflicts/Replaces only for the temporary `sendmailanalyzer10` test package.
+  * Preserve all existing v10 configuration values across conffile upgrades.
+  * Import LOG_FILE and LOCAL_DOMAIN from legacy 9.4 configuration on fresh upgrade.
+  * Use generic public defaults instead of site-specific LOCAL_DOMAINS.
+  * Enable and start/restart the v10 collector and web services after successful checks.
+  * Preserve existing 10.x configuration with pre-unpack backups and merge only missing mandatory parameters.
+
+ -- Nazcar <nazcar@almogavers.net>  Wed, 16 Sep 2026 08:30:00 +0200

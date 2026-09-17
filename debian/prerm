@@ -1,0 +1,11 @@
+#!/bin/sh
+main() {
+    if [ "${1:-}" = "remove" ] || [ "${1:-}" = "purge" ]; then
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl stop sendmailanalyzer-web.service >/dev/null 2>&1 || true
+            systemctl stop sendmailanalyzer-collector.service >/dev/null 2>&1 || true
+        fi
+    fi
+    return 0
+}
+main "$@"

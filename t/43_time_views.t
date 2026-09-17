@@ -1,0 +1,10 @@
+use strict; use warnings; use Test::More;
+my $f='lib/SendmailAnalyzer/Storage/SQLite.pm'; open my $fh,'<',$f or die $!; local $/; my $s=<$fh>;
+like($s,qr/sub hourly_series/, 'hourly aggregation exists');
+like($s,qr/sub monthly_series/, 'monthly aggregation exists');
+like($s,qr/sub spam_daily_series/, 'spam daily aggregation exists');
+like($s,qr/\$opt\{direction\}/, 'message direction filter exists');
+like($s,qr/\$opt\{spam\}/, 'message spam filter exists');
+like($s,qr/\$opt\{virus\}/, 'message virus filter exists');
+like($s,qr/\$opt\{rejected\}/, 'message reject filter exists');
+done_testing;

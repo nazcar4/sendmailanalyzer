@@ -1,0 +1,10 @@
+use strict; use warnings; use Test::More; use FindBin qw($Bin);
+my $f="$Bin/../lib/SendmailAnalyzer/Storage/SQLite.pm"; open my $fh,'<',$f or die $!; local $/; my $s=<$fh>; close $fh;
+like($s,qr/UPDATE events SET raw=NULL WHERE raw IS NOT NULL/,'raw retention clears literal raw text only');
+unlike($s,qr/DELETE FROM events WHERE timestamp < datetime/,'raw retention does not delete structured event rows');
+like($s,qr/sub stats_range.*first_seen >= \?.*first_seen <= \?/s,'message period stats use first_seen range');
+like($s,qr/SELECT substr\(first_seen,1,10\) day/,'daily series is anchored to first_seen');
+like($s,qr/lower\(COALESCE\(status,''\)\)='sent'/,'recipient sent status is case-insensitive');
+my $c="$Bin/../bin/sa10_collect"; open my $cf,'<',$c or die $!; local $/; my $cs=<$cf>; close $cf;
+like($cs,qr/prune_raw_events\(\$cfg->\{RAW_RETENTION_DAYS\}\).*time-\$last_raw_prune >= 86400/s,'follow collector enforces raw retention periodically');
+done_testing;

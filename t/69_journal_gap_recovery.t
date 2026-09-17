@@ -1,0 +1,16 @@
+use strict; use warnings; use Test::More; use FindBin qw($Bin); use lib "$Bin/../lib";
+use SendmailAnalyzer::Parser;
+my $sample='2026-08-07T12:34:56+02:00 mail.example.test postfix/qmgr[1234]: ABC123: from=<a@example.net>, size=456, nrcpt=1 (queue active)';
+my $e=SendmailAnalyzer::Parser->parse_line($sample);
+ok($e,'journal short-iso Postfix line is parseable');
+is($e->{type},'envelope','journal replay preserves envelope semantics');
+is($e->{queue_id},'ABC123','journal replay preserves real Queue-ID');
+open my $fh,'<',"$Bin/../bin/sa10_upgrade_from_94" or die $!; local $/; my $s=<$fh>; close $fh;
+like($s,qr/sub recover_journal_gaps/,'upgrade contains calendar-gap journal recovery');
+like($s,qr/LegacySource->new\(root=>\$root\)->day_map/,'gap detection is based on actual 9.4 day inventory');
+like($s,qr/journalctl.*--since/s,'missing days are sourced from retained journal');
+like($s,qr/sa10_collect.*--replay/s,'journal recovery uses the normal v10 parser/classifier pipeline');
+like($s,qr/--historical-day/, 'journal replay enables date-aware Queue-ID collision protection');
+like($s,qr/already represented in v10/,'existing v10 dates are not replayed blindly');
+like($s,qr/Historical gap recovery summary/,'recovery reports explicit coverage summary');
+done_testing;

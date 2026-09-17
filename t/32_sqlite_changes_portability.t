@@ -1,0 +1,10 @@
+use strict; use warnings; use Test::More; use FindBin qw($Bin);
+my $f="$Bin/../lib/SendmailAnalyzer/Storage/SQLite.pm";
+open my $fh,'<',$f or die $!; local $/; my $s=<$fh>; close $fh;
+unlike($s,qr/->sqlite_changes\b/,'does not depend on DBD::SQLite sqlite_changes method');
+like($s,qr/sub _changes\s*\{.*?SELECT changes\(\)/s,'portable SQLite changes helper uses SELECT changes()');
+like($s,qr/\$sth->execute\(.*?\);\s*my \$inserted=\$self->_changes/s,'event insertion snapshots changes immediately');
+like($s,qr/return \$inserted;/,'store_event returns captured insert result');
+like($s,qr/my \$n=\$self->_changes;/,'message-id link uses portable helper');
+like($s,qr/return \$self->_changes;/,'retention uses portable helper');
+done_testing;

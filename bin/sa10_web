@@ -1,0 +1,6 @@
+#!/usr/bin/env perl
+use strict; use warnings; use FindBin qw($Bin); use lib '/usr/lib/sendmailanalyzer/lib'; use lib "$Bin/../lib"; use Getopt::Long; use SendmailAnalyzer::Config;
+my $config='/etc/sendmailanalyzer.conf'; GetOptions('config=s'=>\$config) or die "usage: sa10_web [--config file]\n"; my $cfg=SendmailAnalyzer::Config->load($config);
+$ENV{SENDMAILANALYZER_CONFIG}=$config; my $psgi='/usr/lib/sendmailanalyzer/web/sendmailanalyzer.psgi'; $psgi="$Bin/../web/sendmailanalyzer.psgi" if !-f $psgi && -f "$Bin/../web/sendmailanalyzer.psgi";
+my @cmd=('plackup','-s','HTTP::Server::PSGI','--host',$cfg->{BIND_HOST},'--port',$cfg->{BIND_PORT},$psgi);
+exec @cmd; die "Cannot run plackup: $!\n";

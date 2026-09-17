@@ -1,0 +1,234 @@
+#!/bin/sh
+
+restore_runtime_on_failure() {
+    rc=${1:-1}
+    printf '%s\n' "SendmailAnalyzer post-install failed (exit $rc); restoring pre-upgrade SQLite/configuration and service state." >&2
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        systemctl stop sendmailanalyzer-collector.service >/dev/null 2>&1 || true
+        systemctl stop sendmailanalyzer-web.service >/dev/null 2>&1 || true
+    fi
+    if [ -n "${SNAP:-}" ] && [ -r "$SNAP/sendmailanalyzer.sqlite3.existing" ]; then
+        rm -f /var/lib/sendmailanalyzer/sendmailanalyzer.sqlite3-wal /var/lib/sendmailanalyzer/sendmailanalyzer.sqlite3-shm
+        cp -a "$SNAP/sendmailanalyzer.sqlite3.existing" /var/lib/sendmailanalyzer/sendmailanalyzer.sqlite3 >/dev/null 2>&1 || true
+        chown sendmailanalyzer:sendmailanalyzer /var/lib/sendmailanalyzer/sendmailanalyzer.sqlite3 >/dev/null 2>&1 || true
+        chmod 0640 /var/lib/sendmailanalyzer/sendmailanalyzer.sqlite3 >/dev/null 2>&1 || true
+    fi
+    if [ -n "${SNAP:-}" ] && [ -r "$SNAP/collector.state.existing" ]; then
+        cp -a "$SNAP/collector.state.existing" /var/lib/sendmailanalyzer/collector.state >/dev/null 2>&1 || true
+        chown sendmailanalyzer:sendmailanalyzer /var/lib/sendmailanalyzer/collector.state >/dev/null 2>&1 || true
+    fi
+    if [ -n "${SNAP:-}" ] && [ -r "$SNAP/sendmailanalyzer.conf.existing" ]; then
+        cp -a "$SNAP/sendmailanalyzer.conf.existing" /etc/sendmailanalyzer.conf >/dev/null 2>&1 || true
+    fi
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        if [ -n "${SNAP:-}" ] && [ -r "$SNAP/runtime-services.active" ]; then
+            while IFS= read -r svc; do
+                [ -n "$svc" ] || continue
+                systemctl start "$svc" >/dev/null 2>&1 || true
+            done < "$SNAP/runtime-services.active"
+        fi
+    fi
+}
+
+main() {
+    case "${1:-}" in
+        configure|'') ;;
+        *) return 0 ;;
+    esac
+
+    CONF=/etc/sendmailanalyzer.conf
+    DEFAULT_CONF=/usr/share/sendmailanalyzer/defaults/sendmailanalyzer.conf
+    BACKUP_ROOT=/var/backups/sendmailanalyzer
+    SNAP=''
+    [ ! -r "$BACKUP_ROOT/.active-preinst-backup" ] || SNAP=$(cat "$BACKUP_ROOT/.active-preinst-backup" 2>/dev/null || true)
+
+    if ! getent group sendmailanalyzer >/dev/null 2>&1; then
+        groupadd --system sendmailanalyzer || return 1
+    fi
+    if ! getent passwd sendmailanalyzer >/dev/null 2>&1; then
+        useradd --system --home-dir /var/lib/sendmailanalyzer --shell /usr/sbin/nologin --gid sendmailanalyzer sendmailanalyzer || return 1
+    fi
+    if getent group adm >/dev/null 2>&1; then
+        usermod -a -G adm sendmailanalyzer || return 1
+    fi
+    install -d -o sendmailanalyzer -g sendmailanalyzer -m 0750 /var/lib/sendmailanalyzer || return 1
+    install -d -o root -g root -m 0700 "$BACKUP_ROOT" || return 1
+    install -d -o root -g root -m 0755 /etc/sendmailanalyzer.d || return 1
+
+    [ -r "$DEFAULT_CONF" ] || { printf '%s\n' "ERROR: missing packaged configuration template: $DEFAULT_CONF" >&2; return 1; }
+    # During a same-name upgrade from a package-managed 9.4 conffile, dpkg may
+    # preserve the fact that the old conffile was removed by preinst. Recreate
+    # the documented v10 template here; legacy/site values are merged below.
+    if [ ! -r "$CONF" ]; then
+        install -m 0644 -o root -g root "$DEFAULT_CONF" "$CONF" || return 1
+    fi
+
+    get_key() {
+        awk -v k="$2" '$1 == k { $1=""; sub(/^[[:space:]]+/,""); print; exit }' "$1"
+    }
+    set_key() {
+        key=$1; value=$2
+        [ -n "$value" ] || return 0
+        tmp=$(mktemp) || return 1
+        awk -v k="$key" -v v="$value" '
+            BEGIN{done=0}
+            $1==k && !done {print k " " v; done=1; next}
+            {print}
+            END{if(!done) print k " " v}
+        ' "$CONF" > "$tmp" || { rm -f "$tmp"; return 1; }
+        cat "$tmp" > "$CONF"; rm -f "$tmp"
+    }
+
+    # Configuration authority order:
+    # 1) an existing production v10 /etc/sendmailanalyzer.conf;
+    # 2) the temporary /etc/sendmailanalyzer10.conf from development packages;
+    # 3) selected compatible settings from a 9.4 configuration;
+    SOURCE_CONF=''
+    if [ -n "$SNAP" ] && [ -r "$SNAP/sendmailanalyzer.conf.existing" ] && grep -Eq '^[[:space:]]*DB_FILE[[:space:]]+' "$SNAP/sendmailanalyzer.conf.existing"; then
+        SOURCE_CONF="$SNAP/sendmailanalyzer.conf.existing"
+    elif [ -n "$SNAP" ] && [ -r "$SNAP/sendmailanalyzer10.conf" ]; then
+        SOURCE_CONF="$SNAP/sendmailanalyzer10.conf"
+    fi
+    if [ -n "$SOURCE_CONF" ]; then
+        for key in LOG_FILE RSPAMD_LOG_FILE LEGACY_DATA_DIR LOCAL_DOMAINS BIND_HOST BIND_PORT RAW_RETENTION_DAYS WEB_PAGE_SIZE MEMORY_MESSAGE_LIMIT HOSTNAME CONFIG_DIR; do
+            value=$(get_key "$SOURCE_CONF" "$key")
+            [ -z "$value" ] || set_key "$key" "$value" || return 1
+        done
+        printf '%s\n' "Imported existing v10 configuration values from $SOURCE_CONF"
+    else
+        LEGACY_CONF=''
+        if [ -n "$SNAP" ] && [ -r "$SNAP/sendmailanalyzer-9.4.conf" ]; then LEGACY_CONF="$SNAP/sendmailanalyzer-9.4.conf";
+        elif [ -n "$SNAP" ] && [ -r "$SNAP/sendmailanalyzer-9.4-local.conf" ]; then LEGACY_CONF="$SNAP/sendmailanalyzer-9.4-local.conf"; fi
+        if [ -n "$LEGACY_CONF" ]; then
+            value=$(get_key "$LEGACY_CONF" LOG_FILE); [ -z "$value" ] || set_key LOG_FILE "$value" || return 1
+            domains=$(awk '$1=="LOCAL_DOMAIN" {$1=""; sub(/^[[:space:]]+/,""); if(length($0)) { if(out!="") out=out ","; out=out $0 }} END{gsub(/[[:space:]]+/,"",out); print out}' "$LEGACY_CONF")
+            [ -z "$domains" ] || set_key LOCAL_DOMAINS "$domains" || return 1
+            printf '%s\n' "Imported compatible SendmailAnalyzer 9.4 settings from $LEGACY_CONF"
+        fi
+    fi
+
+    # Canonical production paths are never inherited from temporary v10 builds.
+    set_key DB_FILE /var/lib/sendmailanalyzer/sendmailanalyzer.sqlite3 || return 1
+    set_key STATE_FILE /var/lib/sendmailanalyzer/collector.state || return 1
+
+    # Ensure any parameters introduced by this release exist, without replacing
+    # existing local values.
+    for key in LOG_FILE RSPAMD_LOG_FILE DB_FILE STATE_FILE LEGACY_DATA_DIR LOCAL_DOMAINS BIND_HOST BIND_PORT RAW_RETENTION_DAYS WEB_PAGE_SIZE MEMORY_MESSAGE_LIMIT CONFIG_DIR; do
+        if ! awk -v k="$key" '$1 == k { found=1 } END { exit(found ? 0 : 1) }' "$CONF"; then
+            value=$(get_key "$DEFAULT_CONF" "$key")
+            [ -n "$value" ] || { printf '%s\n' "ERROR: packaged default missing $key" >&2; return 1; }
+            printf '\n# Added automatically by SendmailAnalyzer 10.0.16\n%s %s\n' "$key" "$value" >> "$CONF" || return 1
+        fi
+    done
+    chown root:root "$CONF" 2>/dev/null || true
+    chmod 0644 "$CONF" 2>/dev/null || true
+
+    # Promote the validated SQLite database from the temporary parallel v10
+    # package when present.  This avoids reparsing or losing live history.
+    NEWDB=/var/lib/sendmailanalyzer/sendmailanalyzer.sqlite3
+    if [ ! -e "$NEWDB" ] && [ -n "$SNAP" ] && [ -d "$SNAP/sendmailanalyzer10-state" ] && [ -e "$SNAP/sendmailanalyzer10-state/sendmailanalyzer.sqlite3" ]; then
+        cp -a "$SNAP/sendmailanalyzer10-state/." /var/lib/sendmailanalyzer/ || return 1
+        printf '%s\n' 'Promoted SQLite/state from temporary sendmailanalyzer10 installation.'
+    fi
+    chown -R sendmailanalyzer:sendmailanalyzer /var/lib/sendmailanalyzer || return 1
+    chmod 0750 /var/lib/sendmailanalyzer || return 1
+
+    printf '%s\n' 'Preparing access to mail/Rspamd logs and rotations...'
+    /usr/bin/sa10_prepare_logs "$CONF" || return 1
+    if [ -d /var/log/rspamd ] && command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /usr/lib/tmpfiles.d/sendmailanalyzer-rspamd.conf >/dev/null 2>&1 || return 1
+    fi
+
+    printf '%s\n' 'Validating/preserving the production SQLite database...'
+    if [ -e "$NEWDB" ]; then
+        runuser -u sendmailanalyzer -- /usr/bin/perl -I/usr/lib/sendmailanalyzer/lib -MSendmailAnalyzer::Storage::SQLite -e '
+            my $file=shift;
+            my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$file);
+            my ($q)=$s->dbh->selectrow_array("PRAGMA quick_check");
+            die "SQLite quick_check failed: ".(defined($q)?$q:"unknown")."\n" unless defined($q) && $q eq "ok";
+            $s->dbh->disconnect;
+        ' "$NEWDB" || return 1
+        printf '%s\n' 'Existing v10 SQLite detected: preserved in place; automatic SendmailAnalyzer 9.4 migration is disabled.'
+    else
+        runuser -u sendmailanalyzer -- /usr/bin/perl -I/usr/lib/sendmailanalyzer/lib -MSendmailAnalyzer::Storage::SQLite -e '
+            my $file=shift;
+            my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$file);
+            my ($q)=$s->dbh->selectrow_array("PRAGMA quick_check");
+            die "SQLite initialization failed: ".(defined($q)?$q:"unknown")."\n" unless defined($q) && $q eq "ok";
+            $s->dbh->disconnect;
+        ' "$NEWDB" || return 1
+        printf '%s\n' 'Initialized a fresh v10 SQLite database; legacy 9.4 data was not imported automatically.'
+    fi
+
+    printf '%s\n' 'Running SendmailAnalyzer 10 self-test...'
+    /usr/bin/sa10_selftest --config "$CONF" || return 1
+    runuser -u sendmailanalyzer -- /usr/bin/sa10_db --config "$CONF" --cmd quick-check >/dev/null || return 1
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        if [ -d /run/systemd/system ]; then
+            systemctl enable sendmailanalyzer-collector.service sendmailanalyzer-web.service >/dev/null 2>&1 || return 1
+            systemctl restart sendmailanalyzer-collector.service || return 1
+            systemctl restart sendmailanalyzer-web.service || return 1
+        fi
+    fi
+
+    # Migrate the 9.4 Apache Alias/Directory integration to the v10 reverse
+    # proxy while preserving the old report URL and Require rules.  A fresh
+    # install receives a safe localhost-only /reports/ configuration.
+    if command -v apache2ctl >/dev/null 2>&1; then
+        if command -v a2enmod >/dev/null 2>&1; then a2enmod proxy proxy_http headers alias >/dev/null 2>&1 || return 1; fi
+        AP_OUT=$(/usr/bin/sa10_apache_upgrade --apply --backup-dir "$BACKUP_ROOT/apache" 2>&1) || { printf '%s\n' "$AP_OUT" >&2; return 1; }
+        printf '%s\n' "$AP_OUT"
+        AP_CHANGED=$(printf '%s\n' "$AP_OUT" | sed -n 's/^Apache migration changed=\([0-9][0-9]*\).*/\1/p' | tail -1)
+        AP_CONFIGURED=$(printf '%s\n' "$AP_OUT" | sed -n 's/^Apache migration changed=[0-9][0-9]* configured=\([0-9][0-9]*\).*/\1/p' | tail -1)
+        AP_CHANGED=${AP_CHANGED:-0}
+        AP_CONFIGURED=${AP_CONFIGURED:-0}
+        # A zero-change result can mean Apache is already correctly configured.
+        # Only install the fresh localhost-only example when no existing,
+        # migrated or recovered v10 integration was detected anywhere.
+        if [ "$AP_CONFIGURED" -eq 0 ] && [ -d /etc/apache2/conf-available ]; then
+            if [ ! -e /etc/apache2/conf-available/sendmailanalyzer.conf ]; then
+                install -m 0644 /usr/share/doc/sendmailanalyzer/apache2-sendmailanalyzer.conf /etc/apache2/conf-available/sendmailanalyzer.conf || return 1
+            fi
+            if command -v a2enconf >/dev/null 2>&1; then a2enconf sendmailanalyzer >/dev/null 2>&1 || return 1; fi
+        fi
+        apache2ctl configtest || return 1
+        if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl reload apache2 || return 1; fi
+    fi
+
+    # 10.0.16-11 deliberately does not import, remove or retire any live/backup
+    # SendmailAnalyzer 9.4 history automatically.  Existing v10 SQLite history
+    # is authoritative; legacy helpers remain available only for explicit use.
+
+    # Clean compatibility remnants from the temporary parallel test package.
+    if [ -d /var/log/rspamd ] && command -v setfacl >/dev/null 2>&1; then
+        setfacl -x u:sendmailanalyzer10 /var/log/rspamd >/dev/null 2>&1 || true
+        setfacl -x d:u:sendmailanalyzer10 /var/log/rspamd >/dev/null 2>&1 || true
+    fi
+    rm -f /etc/sendmailanalyzer10.conf /etc/tmpfiles.d/sendmailanalyzer10-rspamd.conf
+    rm -f /etc/systemd/system/multi-user.target.wants/sendmailanalyzer10-collector.service /etc/systemd/system/multi-user.target.wants/sendmailanalyzer10-web.service
+    rm -f /etc/systemd/system/sendmailanalyzer10-collector.service /etc/systemd/system/sendmailanalyzer10-web.service
+    if [ -d /var/lib/sendmailanalyzer10 ]; then rm -rf /var/lib/sendmailanalyzer10; fi
+    if [ -d /var/backups/sendmailanalyzer10 ]; then
+        stamp=$(date +%Y%m%d-%H%M%S)
+        mv /var/backups/sendmailanalyzer10 "$BACKUP_ROOT/temporary-v10-backups-$stamp" 2>/dev/null || true
+    fi
+    if ! dpkg-query -W -f='${db:Status-Status}' sendmailanalyzer10 2>/dev/null | grep -qx installed; then
+        if getent passwd sendmailanalyzer10 >/dev/null 2>&1; then userdel sendmailanalyzer10 >/dev/null 2>&1 || true; fi
+        if getent group sendmailanalyzer10 >/dev/null 2>&1; then groupdel sendmailanalyzer10 >/dev/null 2>&1 || true; fi
+    fi
+    if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
+    rm -f "$BACKUP_ROOT/.active-preinst-backup"
+
+    printf '%s\n' 'SendmailAnalyzer 10.0.16-16 production upgrade configured successfully.'
+    printf '%s\n' 'Configuration: /etc/sendmailanalyzer.conf'
+    printf '%s\n' 'Configuration help: /usr/share/doc/sendmailanalyzer/CONFIGURATION.md'
+    return 0
+}
+
+main "$@"
+rc=$?
+if [ "$rc" -ne 0 ]; then restore_runtime_on_failure "$rc"; fi
+exit "$rc"

@@ -1,0 +1,8 @@
+#!/usr/bin/env perl
+use strict; use warnings; use FindBin qw($Bin); use lib '/usr/lib/sendmailanalyzer/lib'; use lib "$Bin/../lib";
+use Getopt::Long; use JSON::PP qw(encode_json); use SendmailAnalyzer::Config; use SendmailAnalyzer::Parser; use SendmailAnalyzer::Classifier;
+my ($year,$events,$config)=(undef,0,'/etc/sendmailanalyzer.conf'); GetOptions('year=i'=>\$year,'events!'=>\$events,'config=s'=>\$config) or die "usage: sa10_parse [--config file] [--year YYYY] [--events] [files...]\n";
+my $cfg=SendmailAnalyzer::Config->load($config);
+my $c=SendmailAnalyzer::Classifier->new(local_domains=>$cfg->{LOCAL_DOMAINS});
+while(my $line=<>) { my $e=SendmailAnalyzer::Parser->parse_line($line,defined $year?(year=>$year):(),header_routes=>$cfg->{HEADER_ROUTES},header_ignore=>$cfg->{HEADER_IGNORE}); next if !$e; if($events){print encode_json($e->as_hash),"\n"} else {$c->add_event($e)} }
+if(!$events){ my $m=$c->finalize; print encode_json($m->{$_}),"\n" for sort keys %$m; }

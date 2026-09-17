@@ -1,0 +1,24 @@
+#!/usr/bin/env perl
+use strict; use warnings;
+use FindBin qw($Bin); use lib '/usr/lib/sendmailanalyzer/lib'; use lib "$Bin/../lib";
+use Getopt::Long; use SendmailAnalyzer::Config; use SendmailAnalyzer::Storage::SQLite; use SendmailAnalyzer::MigrationAudit;
+my $config='/etc/sendmailanalyzer.conf'; my ($root,$db,$exact,$verbose);
+GetOptions('config=s'=>\$config,'legacy=s'=>\$root,'db=s'=>\$db,'exact-through=s'=>\$exact,'verbose!'=>\$verbose) or die "usage: sa10_migration_audit [--exact-through YYYY-MM-DD] [--verbose]\n";
+die "--exact-through must be YYYY-MM-DD\n" if defined($exact) && $exact !~ /^\d{4}-\d{2}-\d{2}$/;
+my $cfg=SendmailAnalyzer::Config->load($config); $root||=$cfg->{LEGACY_DATA_DIR}; $db||=$cfg->{DB_FILE};
+my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$db,readonly=>1); my $r=SendmailAnalyzer::MigrationAudit->audit(root=>$root,dbh=>$s->dbh,exact_through=>$exact);
+print "SendmailAnalyzer 10 migration audit\n";
+print "legacy=$root db=$db",(defined($exact)?" exact_through=$exact":""),"\n";
+if ($verbose) {
+  for my $row (@{$r->{rows}}) {
+    my $tag=$row->{exact}?'EXACT':'REPLAY';
+    printf "%s %s %s",$tag,$row->{host},$row->{date};
+    for my $k (qw(messages recipients sent spam virus dsn auth rejected)) { printf " %s=%+d",$k,$row->{delta}{$k}; }
+    printf " legacy_auth_duplicate_lines=%d",0+($row->{auth_duplicate_lines}||0);
+    print @{$row->{bad}} ? " HARD_MISMATCH=".join(',',@{$row->{bad}}) : '',"\n";
+  }
+}
+print "days=$r->{days} exact_days=$r->{exact_days} exact_mismatches=$r->{exact_mismatches}\n";
+print "aggregate deltas:"; for my $k (qw(messages recipients sent spam virus dsn auth rejected)) { printf " %s=%+d",$k,0+($r->{total_delta}{$k}||0); } print "\n";
+if ($r->{exact_mismatches}) { print "RESULT: BLOCKED\n"; exit 2; }
+print "RESULT: PASS\n"; exit 0;

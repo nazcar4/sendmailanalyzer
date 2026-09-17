@@ -1,0 +1,20 @@
+use strict; use warnings; use utf8; use Test::More; use FindBin qw($Bin);
+sub slurp { my($f)=@_; open my $h,'<:encoding(UTF-8)',$f or die $!; local $/; <$h> }
+my $w=slurp("$Bin/../web/sendmailanalyzer.psgi");
+my $s=slurp("$Bin/../lib/SendmailAnalyzer/Storage/SQLite.pm");
+like($w,qr/available_months_for_year\(\$y\)/,'month selector asks storage which months contain data');
+like($w,qr/available_days_for_month\(sprintf\('%04d-%02d',\$y,\$m\)\)/,'day calendar asks storage which days contain data');
+like($w,qr/<span class=\"month-link disabled/, 'empty months render as non-link spans');
+like($w,qr/<span class=\"day-cell disabled/, 'empty days render as non-link spans');
+like($w,qr/aria-disabled=\"true\"/, 'disabled calendar entries are marked for accessibility');
+like($w,qr/month_has_data\(substr\(\$next,0,7\)\)/,'monthly next navigation checks target month availability');
+like($w,qr/day_has_data\(\$next\)/,'daily next navigation checks target day availability');
+like($w,qr/class=\"nav-disabled\"/, 'empty previous/next targets render as text instead of links');
+like($s,qr/sub available_days_for_month\s*\{/, 'storage exposes available days by month');
+like($s,qr/sub available_months_for_year\s*\{/, 'storage exposes available months by year');
+like($s,qr/\['messages','first_seen'\]/,'availability includes message data');
+like($s,qr/\['events','timestamp'\]/,'availability includes generic event data');
+like($s,qr/\['auth_events','timestamp'\]/,'availability includes authentication data');
+like($s,qr/\['tls_events','timestamp'\]/,'availability includes TLS data');
+like($s,qr/FROM legacy_aggregates WHERE day >= \? AND day < \?/,'availability includes historical aggregate data');
+done_testing;

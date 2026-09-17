@@ -1,0 +1,13 @@
+use strict; use warnings; use utf8; use Test::More; use FindBin qw($Bin);
+my $web="$Bin/../web/sendmailanalyzer.psgi"; open my $fh,'<:encoding(UTF-8)',$web or die $!; local $/; my $w=<$fh>;
+like($w,qr/sub flow_line_chart/,'classic-style hourly flow line chart exists');
+like($w,qr/sub size_flow_line_chart/,'classic-style size line chart exists');
+like($w,qr/sub direction_donut/,'visual delivery-direction chart exists');
+like($w,qr/Message flow/,'dashboard includes classic flow chart title');
+like($w,qr/Delivery Direction/,'dashboard includes delivery direction chart');
+like($w,qr/Distinct senders\/recipients/,'dashboard includes distinct sender/recipient block');
+like($w,qr/hourly_flow_series\(\$date\)/,'dashboard feeds graph with direction-by-hour data');
+my $st="$Bin/../lib/SendmailAnalyzer/Storage/SQLite.pm"; open my $sf,'<',$st or die $!; local $/; my $s=<$sf>;
+like($s,qr/sub hourly_flow_series/,'storage exposes hourly direction series');
+like($s,qr/sub unique_party_counts/,'storage exposes distinct parties count');
+done_testing;

@@ -1,0 +1,13 @@
+use strict; use warnings; use utf8; use Test::More; use FindBin qw($Bin);
+my $f="$Bin/../web/sendmailanalyzer.psgi"; open my $fh,'<:encoding(UTF-8)',$f or die $!; local $/; my $s=<$fh>;
+like($s,qr/sub month_index/,'classic layout has compact year/month selector');
+like($s,qr/sub calendar_widget/,'classic layout has compact day calendar');
+like($s,qr/sub time_console/,'classic layout has top time console');
+like($s,qr/class=\"period-console\"/,'temporal navigation sits above report');
+like($s,qr/class=\"days-grid\"/,'days use compact calendar grid at the right');
+like($s,qr/class=\"hours-row\"/,'hours use a compact centered row');
+unlike($s,qr/class=\"days-strip\"/,'wide 31-day ribbon removed');
+like($s,qr/GLOBAL STATISTICS/,'left navigation has global statistics group');
+like($s,qr/TOP STATISTICS/,'left navigation has top statistics group');
+unlike($s,qr/<div class=\"classic-nav-title\">Time/,'time controls are not in left menu');
+done_testing;

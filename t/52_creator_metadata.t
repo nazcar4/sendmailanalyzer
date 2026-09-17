@@ -1,0 +1,20 @@
+use strict; use warnings; use utf8; use Test::More; use FindBin qw($Bin);
+my $root="$Bin/..";
+sub slurp { my($f)=@_; open my $fh,'<:encoding(UTF-8)',$f or die $!; local $/; return <$fh>; }
+my $control=slurp("$root/debian/control");
+like($control,qr/^Maintainer: Nazcar <nazcar\@almogavers\.net>$/m,'Debian maintainer is Nazcar');
+my $change=slurp("$root/debian/changelog");
+like($change,qr/^ -- Nazcar <nazcar\@almogavers\.net>/m,'Debian changelog is signed by Nazcar');
+my $copy=slurp("$root/debian/copyright");
+like($copy,qr/2026 Nazcar <nazcar\@almogavers\.net>/,'v10 copyright credits Nazcar');
+like($copy,qr/2002-2020 Gilles Darold/,'original author credit is preserved');
+unlike($copy,qr/salogo|Sendmail\.org|logo-permission/i,'copyright metadata has no third-party logo stanza');
+my $notice=slurp("$root/NOTICE");
+like($notice,qr/Creator and maintainer of SendmailAnalyzer 10:\nNazcar <nazcar\@almogavers\.net>/,'NOTICE identifies v10 creator');
+like($notice,qr/Gilles Darold/,'NOTICE preserves original author credit');
+like($notice,qr/does not ship\s+the historical Sendmail "Bat" logo/s,'NOTICE states that the historical logo is not redistributed');
+my $mk=slurp("$root/Makefile.PL");
+like($mk,qr/AUTHOR=>'Nazcar <nazcar\@almogavers\.net>'/,'Perl metadata identifies author');
+my $builder=slurp("$root/scripts/build-deb.sh");
+like($builder,qr/dpkg-gencontrol\s+-psendmailanalyzer/,'convenience DEB builder derives maintainer metadata from Debian control');
+done_testing;

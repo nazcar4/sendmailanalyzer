@@ -1,0 +1,85 @@
+#!/bin/sh
+# Prepare least-privilege read access to current and rotated mail/Rspamd logs.
+# Idempotent: safe to run after install, after rotation, or during diagnostics.
+
+main() {
+    CONFIG=${1:-/etc/sendmailanalyzer.conf}
+    SERVICE_USER=${SENDMAILANALYZER_USER:-${SENDMAILANALYZER10_USER:-sendmailanalyzer}}
+
+    if [ ! -r "$CONFIG" ]; then
+        printf '%s\n' "ERROR: configuration not readable: $CONFIG" >&2
+        return 1
+    fi
+    if ! getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
+        printf '%s\n' "ERROR: service user does not exist: $SERVICE_USER" >&2
+        return 1
+    fi
+    if ! command -v setfacl >/dev/null 2>&1; then
+        printf '%s\n' 'ERROR: setfacl is missing. Install Debian package: acl' >&2
+        return 1
+    fi
+
+    get_value() {
+        awk -v key="$1" '$1 == key { $1=""; sub(/^[[:space:]]+/,""); print; exit }' "$CONFIG"
+    }
+
+    MAIL_LOG=$(get_value LOG_FILE)
+    RSPAMD_LOG=$(get_value RSPAMD_LOG_FILE)
+    failures=0
+
+    grant_rotated_files() {
+        path=$1
+        label=$2
+        [ -n "$path" ] || return 0
+        dir=$(dirname -- "$path")
+        base=$(basename -- "$path")
+        [ -d "$dir" ] || return 0
+
+        # Current + numeric rotations, including compressed variants such as .1.gz.
+        if ! find "$dir" -maxdepth 1 -type f \( -name "$base" -o -name "$base.[0-9]*" \) -print0 | \
+            xargs -0 -r setfacl -m "u:${SERVICE_USER}:r--"; then
+            printf '%s\n' "ERROR: could not grant read ACLs for $label logs under $dir" >&2
+            failures=$((failures + 1))
+        fi
+    }
+
+    # Debian mail.log normally uses root:adm 0640. Membership in adm is the
+    # long-term mechanism; per-file ACLs also repair old root:root rotations.
+    grant_rotated_files "$MAIL_LOG" 'mail'
+
+    if [ -n "$RSPAMD_LOG" ]; then
+        rspamd_dir=$(dirname -- "$RSPAMD_LOG")
+        if [ -d "$rspamd_dir" ]; then
+            # Do not allow directory listing. --x is enough to open known files.
+            if ! setfacl -m "u:${SERVICE_USER}:--x" "$rspamd_dir"; then
+                printf '%s\n' "ERROR: could not grant traversal ACL on $rspamd_dir" >&2
+                failures=$((failures + 1))
+            fi
+            # New Rspamd files/directories inherit read/traverse access for the
+            # collector. The file creation mode still limits the effective mask.
+            if ! setfacl -m "d:u:${SERVICE_USER}:r-x" "$rspamd_dir"; then
+                printf '%s\n' "ERROR: could not set default Rspamd ACL on $rspamd_dir" >&2
+                failures=$((failures + 1))
+            fi
+        fi
+        grant_rotated_files "$RSPAMD_LOG" 'Rspamd'
+    fi
+
+    # Explicit readability checks for live sources that currently exist.
+    for live in "$MAIL_LOG" "$RSPAMD_LOG"; do
+        [ -n "$live" ] || continue
+        [ -e "$live" ] || continue
+        if ! runuser -u "$SERVICE_USER" -- test -r "$live"; then
+            printf '%s\n' "ERROR: $SERVICE_USER still cannot read $live" >&2
+            failures=$((failures + 1))
+        fi
+    done
+
+    if [ "$failures" -ne 0 ]; then
+        return 1
+    fi
+    printf '%s\n' 'SendmailAnalyzer 10 log permissions: OK'
+    return 0
+}
+
+main "$@"

@@ -1,0 +1,402 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use lib '/usr/lib/sendmailanalyzer/lib';
+use lib "$Bin/../lib";
+use Getopt::Long;
+use POSIX qw(strftime);
+use Time::Local qw(timelocal);
+use File::Basename qw(dirname basename);
+use File::Find;
+use File::Path qw(make_path remove_tree);
+use SendmailAnalyzer::Config;
+use SendmailAnalyzer::LegacySource;
+use SendmailAnalyzer::MigrationPreflight;
+use SendmailAnalyzer::MigrationAudit;
+use SendmailAnalyzer::Storage::SQLite;
+
+my $config='/etc/sendmailanalyzer.conf';
+my $auto=0;
+my $service_user=$ENV{SENDMAILANALYZER_SERVICE_USER} || 'sendmailanalyzer';
+GetOptions('config=s'=>\$config,'auto!'=>\$auto,'service-user=s'=>\$service_user)
+    or die "usage: sa10_upgrade_from_94 [--config FILE] [--auto] [--service-user USER]\n";
+my $cfg=SendmailAnalyzer::Config->load($config);
+my $db=$cfg->{DB_FILE} or die "DB_FILE missing from $config\n";
+my $configured_legacy=$cfg->{LEGACY_DATA_DIR} || '/usr/local/sendmailanalyzer/data';
+my $dbdir=dirname($db);
+my $tool_dir=(-x "$Bin/sa10_import_legacy") ? $Bin : '/usr/bin';
+
+sub tool { return "$tool_dir/$_[0]"; }
+sub run_as_service {
+    my (@cmd)=@_;
+    system('runuser','-u',$service_user,'--',@cmd)==0
+        or die "command failed as $service_user: @cmd\n";
+}
+sub date_plus_one {
+    my ($d)=@_;
+    $d =~ /^(\d{4})-(\d{2})-(\d{2})$/ or die "bad date: $d\n";
+    my $t=timelocal(0,0,12,$3,$2-1,$1) + 86400;
+    return strftime('%Y-%m-%d',localtime($t));
+}
+sub today_date { return strftime('%Y-%m-%d',localtime(time)); }
+sub yesterday_date { return strftime('%Y-%m-%d',localtime(time-86400)); }
+sub rotated_files {
+    my ($live)=@_;
+    return () if !defined($live) || $live eq '';
+    my $dir=dirname($live); my $base=basename($live);
+    return () if !-d $dir;
+    opendir(my $dh,$dir) or return ();
+    my @f=map { "$dir/$_" }
+          grep { /^\Q$base\E\.\d+(?:\.gz)?$/ && -f "$dir/$_" } readdir($dh);
+    closedir($dh);
+    return sort {
+        ((stat($a))[9]||0) <=> ((stat($b))[9]||0) || $a cmp $b
+    } @f;
+}
+sub current_and_history {
+    my ($mail,$rspamd)=@_;
+    my @mail_hist=rotated_files($mail);
+    my @rspamd_hist=rotated_files($rspamd);
+    my @all=(@mail_hist, (defined($mail)&&-f $mail ? $mail : ()),
+             @rspamd_hist, (defined($rspamd)&&-f $rspamd ? $rspamd : ()));
+    return (\@mail_hist,\@rspamd_hist,\@all);
+}
+sub ensure_schema {
+    my ($path)=@_;
+    my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$path);
+    $s->dbh->do('PRAGMA wal_checkpoint(TRUNCATE)');
+    $s->dbh->disconnect;
+}
+sub validate_db {
+    my ($path)=@_;
+    my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$path,readonly=>1);
+    my ($qc)=$s->dbh->selectrow_array('PRAGMA quick_check');
+    die "SQLite quick_check failed for $path: ".(defined($qc)?$qc:'undefined')."\n"
+        if !defined($qc) || $qc ne 'ok';
+    $s->dbh->disconnect;
+}
+sub checkpoint_db {
+    my ($path)=@_;
+    my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$path);
+    $s->dbh->do('PRAGMA wal_checkpoint(TRUNCATE)');
+    $s->dbh->disconnect;
+}
+sub snapshot_db {
+    my ($src,$dst)=@_;
+    unlink $dst, "$dst-wal", "$dst-shm";
+    my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$src);
+    $s->dbh->do('PRAGMA wal_checkpoint(TRUNCATE)');
+    my $q=$s->dbh->quote($dst);
+    $s->dbh->do("VACUUM INTO $q");
+    $s->dbh->disconnect;
+    return 1;
+}
+sub service_can_access_legacy {
+    my ($root)=@_;
+    return 0 if !defined($root) || !-d $root;
+    return system('runuser','-u',$service_user,'--','test','-r',$root)==0 && system('runuser','-u',$service_user,'--','test','-x',$root)==0;
+}
+sub stage_legacy_for_service {
+    my ($root)=@_;
+    return ($root,undef) if service_can_access_legacy($root);
+    my $stage="$dbdir/.legacy-stage-$$";
+    remove_tree($stage) if -e $stage;
+    make_path($stage,{mode=>0750});
+    system('cp','-a',"$root/.",$stage)==0 or die "cannot stage protected legacy history from $root to $stage\n";
+    my @pw=getpwnam($service_user);
+    system('chown','-R',"$pw[2]:$pw[3]",$stage)==0 or die "cannot chown legacy staging tree $stage\n";
+    chmod 0750,$stage;
+    return ($stage,$stage);
+}
+sub preflight_root {
+    my ($root)=@_;
+    return if !defined($root) || !-d $root;
+    my $p=SendmailAnalyzer::MigrationPreflight->scan(root=>$root);
+    return $p->{sender_files}>0 ? $p : undef;
+}
+sub discover_legacy {
+    my ($preferred)=@_;
+    my @candidates;
+    push @candidates,$preferred if defined($preferred) && $preferred ne '';
+    # Repair upgrades from 10.0.16-2: that revision could already have retired
+    # the complete 9.4 tree before discovering that history was not imported.
+    push @candidates, reverse sort glob('/var/backups/sendmailanalyzer/retired-9.4-*/usr-local-sendmailanalyzer/data');
+    # Also accept explicit historical snapshots created by future package revisions.
+    push @candidates, reverse sort glob('/var/backups/sendmailanalyzer/preinstall-*/legacy-data');
+    my %seen;
+    for my $root (@candidates) {
+        next if !$root || $seen{$root}++;
+        my $p=preflight_root($root) or next;
+        return ($root,$p);
+    }
+    return (undef,undef);
+}
+sub stable_cutoff {
+    my ($pre,$have_raw_logs)=@_;
+    my $cutoff=$pre->{max_date};
+    die "cannot determine a stable 9.4 cutoff date\n" if !defined($cutoff);
+    my $today=today_date();
+    # When raw logs are available, today's activity is replayed from logs and
+    # legacy import stops at yesterday to avoid overlapping two representations.
+    # Without retained logs, the package preinst has already stopped 9.4, so its
+    # final current-day .dat files are stable and may be imported as history.
+    if ($have_raw_logs && $cutoff ge $today) {
+        $cutoff=yesterday_date();
+    }
+    return $cutoff;
+}
+sub exact_audit {
+    my ($path,$legacy,$cutoff)=@_;
+    my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$path,readonly=>1);
+    my $r=SendmailAnalyzer::MigrationAudit->audit(root=>$legacy,dbh=>$s->dbh,exact_through=>$cutoff);
+    $s->dbh->disconnect;
+    return $r;
+}
+
+sub date_range {
+    my ($from,$through)=@_;
+    return () if !defined($from) || !defined($through) || $from gt $through;
+    my @out; my $d=$from;
+    while ($d le $through) { push @out,$d; $d=date_plus_one($d); }
+    return @out;
+}
+sub mailish_journal_line {
+    my ($line)=@_;
+    return 0 if !defined($line);
+    return $line =~ /\s(?:postfix\/\S+\[\d+\]:|spamd\[\d+\]:|clamav-milter\[\d+\]:|opendkim\[\d+\]:|opendmarc\[\d+\]:|dovecot(?:\[\d+\])?:)/ ? 1:0;
+}
+sub db_day_counts {
+    my ($path,$date)=@_; my $next=date_plus_one($date);
+    my $st=SendmailAnalyzer::Storage::SQLite->new(file=>$path,readonly=>1);
+    my ($m)=$st->dbh->selectrow_array('SELECT COUNT(*) FROM messages WHERE first_seen>=? AND first_seen<?',undef,$date.'T00:00:00',$next.'T00:00:00');
+    my ($e)=$st->dbh->selectrow_array('SELECT COUNT(*) FROM events WHERE timestamp>=? AND timestamp<?',undef,$date.'T00:00:00',$next.'T00:00:00');
+    $st->dbh->disconnect;
+    return (0+($m||0),0+($e||0));
+}
+sub recover_journal_gaps {
+    my ($path,$root,$from,$through)=@_;
+    return {gaps=>0,recovered=>0,covered_empty=>0,unavailable=>0} if !$root || !$from || !$through;
+    my $journalctl=(-x '/usr/bin/journalctl') ? '/usr/bin/journalctl' : undef;
+    if (!$journalctl) {
+        print "Historical gap recovery: journalctl unavailable; legacy-only coverage retained.\n";
+        return {gaps=>0,recovered=>0,covered_empty=>0,unavailable=>0};
+    }
+    my %legacy_day=map { $_->{date}=>1 } @{SendmailAnalyzer::LegacySource->new(root=>$root)->day_map(until=>$through)};
+    my @gaps=grep { !$legacy_day{$_} } date_range($from,$through);
+    if (!@gaps) {
+        print "Historical gap recovery: no calendar gaps in 9.4 source.\n";
+        return {gaps=>0,recovered=>0,covered_empty=>0,unavailable=>0};
+    }
+    my $stage="$dbdir/.journal-gap-$$"; remove_tree($stage) if -e $stage; make_path($stage,{mode=>0750});
+    my @pw=getpwnam($service_user); chown($pw[2],$pw[3],$stage); chmod 0750,$stage;
+    my ($recovered,$covered_empty,$unavailable)=(0,0,0);
+    print "Historical gap recovery: ".scalar(@gaps)." day(s) absent from 9.4 data; checking system journal.\n";
+    for my $date (@gaps) {
+        my ($already_m,$already_e)=db_day_counts($path,$date);
+        if ($already_m || $already_e) {
+            print "Historical gap $date: already represented in v10 (messages=$already_m events=$already_e); replay skipped.\n";
+            next;
+        }
+        my $next=date_plus_one($date); my $file="$stage/$date.log";
+        open my $out,'>',$file or die "cannot create journal staging file $file: $!\n";
+        open my $jh,'-|',$journalctl,'--since',"$date 00:00:00",'--until',"$next 00:00:00",'--no-pager','-o','short-iso'
+            or die "cannot run journalctl for $date: $!\n";
+        my ($total,$mailish)=(0,0);
+        while (my $line=<$jh>) { $total++; if (mailish_journal_line($line)) { print {$out} $line; $mailish++; } }
+        my $jok=close $jh; close $out or die "cannot close $file: $!\n";
+        die "journalctl failed while reading $date\n" if !$jok;
+        if (!$total) {
+            unlink $file; $unavailable++;
+            print "Historical gap $date: journal has no coverage; left explicitly unresolved.\n";
+            next;
+        }
+        if (!$mailish) {
+            unlink $file; $covered_empty++;
+            print "Historical gap $date: journal coverage exists but contains no supported mail records.\n";
+            next;
+        }
+        chown($pw[2],$pw[3],$file); chmod 0640,$file;
+        run_as_service($^X,tool('sa10_collect'),'--config',$config,'--replay','--log',$file,'--db',$path,'--year',substr($date,0,4),'--historical-day',$date);
+        my ($m,$e)=db_day_counts($path,$date);
+        $recovered++;
+        print "Historical gap $date: journal replay complete (source_lines=$mailish messages=$m events=$e).\n";
+        unlink $file;
+    }
+    remove_tree($stage) if -d $stage;
+    print "Historical gap recovery summary: gaps=".scalar(@gaps)." recovered=$recovered covered_without_mail=$covered_empty unresolved=$unavailable\n";
+    return {gaps=>0+@gaps,recovered=>$recovered,covered_empty=>$covered_empty,unavailable=>$unavailable};
+}
+sub legacy_native_conflicts {
+    my ($path,$root,$cutoff)=@_;
+    my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$path,readonly=>1);
+    my $sth=$s->dbh->prepare('SELECT first_seen,legacy FROM messages WHERE queue_id=?');
+    my @bad; my $source=SendmailAnalyzer::LegacySource->new(root=>$root);
+    ENTRY: for my $entry (@{$source->entries(type=>'senders',defined($cutoff)?(until=>$cutoff):())}) {
+        my $date=$entry->{date};
+        my $fh=$source->open_entry($entry);
+        while (my $line=<$fh>) {
+            next if $line !~ /\S/;
+            my (undef,$qid)=split /:/,$line,3; next if !$qid;
+            $sth->execute($qid); my $r=$sth->fetchrow_hashref; next if !$r;
+            next if $r->{legacy};
+            my $existing=substr(($r->{first_seen}||''),0,10);
+            next if $existing eq '' || $existing eq $date;
+            push @bad,"$qid legacy=$date existing=$existing";
+            last if @bad>=10;
+        }
+        $source->close_entry($fh,$entry);
+        last ENTRY if @bad>=10;
+    }
+    $s->dbh->disconnect;
+    return \@bad;
+}
+sub write_marker {
+    my (%o)=@_;
+    my $marker="$dbdir/migration-9.4.status";
+    open my $fh,'>',$marker or die "cannot write $marker: $!\n";
+    print {$fh} "completed_at=",strftime('%Y-%m-%dT%H:%M:%S%z',localtime(time)),"\n";
+    print {$fh} "legacy_detected=",($o{legacy}?1:0),"\n";
+    if ($o{legacy}) {
+        print {$fh} "legacy_import_complete=1\n";
+        print {$fh} "legacy_data_dir=$o{legacy}\n";
+        print {$fh} "legacy_cutoff=$o{cutoff}\n" if $o{cutoff};
+        print {$fh} "legacy_exact_days=",0+($o{exact_days}||0),"\n";
+        print {$fh} "legacy_preserved_until_validation=1\n";
+    }
+    close $fh;
+    my @pw=getpwnam($service_user);
+    chown($pw[2],$pw[3],$marker) if @pw;
+    chmod 0640,$marker;
+}
+
+my ($mail_hist,$rspamd_hist,$all_logs)=current_and_history($cfg->{LOG_FILE},$cfg->{RSPAMD_LOG_FILE});
+my ($legacy_origin,$pre)=discover_legacy($configured_legacy);
+my $has_94=$pre ? 1 : 0;
+
+die "service user $service_user does not exist\n" if !getpwnam($service_user);
+die "database directory does not exist: $dbdir\n" if !-d $dbdir;
+my ($legacy,$legacy_stage)=($legacy_origin,undef);
+if ($has_94) {
+    ($legacy,$legacy_stage)=stage_legacy_for_service($legacy_origin);
+    $pre=preflight_root($legacy) or die "legacy history vanished while staging: $legacy\n";
+}
+END { remove_tree($legacy_stage) if defined($legacy_stage) && -d $legacy_stage; }
+
+sub report_queue_reuse {
+    my ($pre)=@_; return if !$pre || !$pre->{duplicate_queue_ids};
+    print "Legacy Queue-ID reuse detected across day/host generations: $pre->{duplicate_queue_ids}. These generations will be disambiguated internally while preserving the original Queue-ID for display.\n";
+}
+report_queue_reuse($pre) if $has_94;
+
+# Existing v10 databases are not a reason to skip 9.4.  They may contain only
+# data collected since v10 was installed.  Merge the missing 9.4 history into a
+# validated copy, then atomically activate it.
+if (-e $db) {
+    ensure_schema($db);
+    validate_db($db);
+    if (!$has_94) {
+        print "Existing v10 database is valid; no SendmailAnalyzer 9.4 historical dataset was found.\n";
+        exit 0;
+    }
+    die "9.4 preflight blocked: malformed sender rows=$pre->{malformed_sender_rows}\n" if $pre->{malformed_sender_rows};
+    my $cutoff=stable_cutoff($pre,scalar(@$all_logs));
+    my $before=exact_audit($db,$legacy,$cutoff);
+    if ($before->{exact_days}>0 && $before->{exact_mismatches}==0) {
+        write_marker(legacy=>$legacy_origin,cutoff=>$cutoff,exact_days=>$before->{exact_days});
+        print "SendmailAnalyzer 9.4 historical data is already fully represented through $cutoff; no duplicate import performed.\n";
+        exit 0;
+    }
+    my $tmp="$db.legacy-merge.$$";
+    my $stamp=strftime('%Y%m%d-%H%M%S',localtime(time));
+    my $rollback="$db.pre-legacy-merge-$stamp";
+    unlink $tmp,"$tmp-wal","$tmp-shm";
+    print "Detected SendmailAnalyzer 9.4 historical data: $legacy_origin\n";
+    print "Legacy source inventory: senders=$pre->{sender_files} archives=$pre->{history_archives} archived_senders=$pre->{archived_sender_files} range=$pre->{min_date}..$pre->{max_date}\n";
+    print "Merging complete 9.4 history through $cutoff into the existing v10 database.\n";
+    my $ok=eval {
+        snapshot_db($db,$tmp);
+        my @pw=getpwnam($service_user); chown($pw[2],$pw[3],$tmp); chmod 0640,$tmp;
+        run_as_service($^X,tool('sa10_import_legacy'),'--config',$config,'--from',$legacy,'--db',$tmp,'--until',$cutoff);
+        recover_journal_gaps($tmp,$legacy,$pre->{min_date},$cutoff);
+        checkpoint_db($tmp);
+        validate_db($tmp);
+        my $audit=exact_audit($tmp,$legacy,$cutoff);
+        die "9.4 historical merge audit failed: exact_mismatches=$audit->{exact_mismatches}\n" if $audit->{exact_mismatches};
+        snapshot_db($db,$rollback);
+        chmod 0600,$rollback;
+        unlink "$db-wal","$db-shm";
+        rename($tmp,$db) or die "cannot activate merged database $tmp -> $db: $!\n";
+        chown($pw[2],$pw[3],$db); chmod 0640,$db;
+        unlink "$tmp-wal","$tmp-shm";
+        write_marker(legacy=>$legacy_origin,cutoff=>$cutoff,exact_days=>$audit->{exact_days});
+        print "Historical merge validated and activated. Rollback database: $rollback\n";
+        1;
+    };
+    if (!$ok) {
+        my $err=$@ || 'unknown historical merge error';
+        unlink $tmp,"$tmp-wal","$tmp-shm";
+        die $err;
+    }
+    print "SendmailAnalyzer 10 existing database + SendmailAnalyzer 9.4 history: PASS\n";
+    exit 0;
+}
+
+my $tmp="$db.migrating.$$";
+unlink $tmp, "$tmp-wal", "$tmp-shm";
+my $ok=eval {
+    if ($has_94) {
+        die "9.4 preflight blocked: malformed sender rows=$pre->{malformed_sender_rows}\n" if $pre->{malformed_sender_rows};
+            my $cutoff=stable_cutoff($pre,scalar(@$all_logs));
+        my $since=date_plus_one($cutoff);
+        print "Detected SendmailAnalyzer 9.4 data: $legacy_origin\n";
+        print "Legacy source inventory: senders=$pre->{sender_files} archives=$pre->{history_archives} archived_senders=$pre->{archived_sender_files} range=$pre->{min_date}..$pre->{max_date}\n";
+        print "Automatic migration boundary: legacy through $cutoff; raw logs from $since\n";
+        if (@$all_logs) {
+            my @cmd=($^X,tool('sa10_migrate'),'--config',$config,
+                '--legacy',$legacy,'--db',$tmp,'--cutoff',$cutoff,'--since',$since);
+            push @cmd, map { ('--mail-history',$_) } @$mail_hist;
+            push @cmd, map { ('--rspamd-history',$_) } @$rspamd_hist;
+            run_as_service(@cmd);
+        } else {
+            run_as_service($^X,tool('sa10_import_legacy'),'--config',$config,
+                '--from',$legacy,'--db',$tmp,'--until',$cutoff);
+            my $audit=exact_audit($tmp,$legacy,$cutoff);
+            die "9.4 migration audit failed: exact_mismatches=$audit->{exact_mismatches}\n" if $audit->{exact_mismatches};
+        }
+        recover_journal_gaps($tmp,$legacy,$pre->{min_date},$cutoff);
+        checkpoint_db($tmp);
+        validate_db($tmp);
+        rename($tmp,$db) or die "cannot activate migrated database $tmp -> $db: $!\n";
+        my @pw=getpwnam($service_user); chown($pw[2],$pw[3],$db); chmod 0640,$db;
+        my $audit=exact_audit($db,$legacy,$cutoff);
+        die "activated 9.4 migration audit failed: exact_mismatches=$audit->{exact_mismatches}\n" if $audit->{exact_mismatches};
+        write_marker(legacy=>$legacy_origin,cutoff=>$cutoff,exact_days=>$audit->{exact_days});
+    } else {
+        print "No SendmailAnalyzer 9.4 dataset detected; initializing a fresh v10 database.\n";
+        if (@$all_logs) {
+            my @cmd=($^X,tool('sa10_collect'),'--config',$config,'--replay','--seed-state','--db',$tmp);
+            push @cmd, map { ('--log',$_) } @$all_logs;
+            run_as_service(@cmd);
+        } else {
+            my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$tmp);
+            $s->dbh->disconnect;
+        }
+        checkpoint_db($tmp);
+        validate_db($tmp);
+        rename($tmp,$db) or die "cannot activate initialized database $tmp -> $db: $!\n";
+        my @pw=getpwnam($service_user); chown($pw[2],$pw[3],$db); chmod 0640,$db;
+        write_marker(legacy=>undef);
+    }
+    unlink "$tmp-wal", "$tmp-shm";
+    1;
+};
+if (!$ok) {
+    my $err=$@ || 'unknown migration error';
+    unlink $tmp, "$tmp-wal", "$tmp-shm";
+    die $err;
+}
+
+print "SendmailAnalyzer 10 database initialization/migration: PASS\n";
+print "SendmailAnalyzer 9.4 files are preserved until post-install v10 validation completes.\n" if $has_94;
+exit 0;

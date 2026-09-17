@@ -1,0 +1,15 @@
+SendmailAnalyzer 10.0.16
+
+Creator and maintainer of SendmailAnalyzer 10:
+Nazcar <nazcar@almogavers.net>
+
+SendmailAnalyzer 10 is a modernization and new implementation inspired by the
+concepts, reports and historical behavior of the original SendmailAnalyzer by
+Gilles Darold (copyright 2002-2020):
+https://github.com/darold/sendmailanalyzer
+
+SendmailAnalyzer 10 uses its own text-based project branding and does not ship
+the historical Sendmail "Bat" logo.
+
+The project is distributed under the GNU General Public License version 3 or
+later. See LICENSE.

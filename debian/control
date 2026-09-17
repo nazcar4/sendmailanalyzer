@@ -1,0 +1,20 @@
+Source: sendmailanalyzer
+Section: mail
+Priority: optional
+Maintainer: Nazcar <nazcar@almogavers.net>
+Build-Depends: perl, dpkg-dev, gzip, libdbi-perl, libdbd-sqlite3-perl, libplack-perl, liburi-perl
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: sendmailanalyzer
+Architecture: all
+Depends: perl, passwd, acl, util-linux, systemd, tar, gzip, libdbi-perl, libdbd-sqlite3-perl, libplack-perl, liburi-perl
+Conflicts: sendmailanalyzer10
+Replaces: sendmailanalyzer10
+Recommends: apache2, rsyslog
+Description: modern Postfix-first mail log analyzer and web dashboard
+ SendmailAnalyzer 10 correlates Postfix, Postscreen, SpamAssassin, native
+ Rspamd file logs, OpenDKIM, OpenDMARC, ClamAV and Dovecot events into SQLite.
+ It provides a read-only web dashboard, JSON API and Prometheus-style metrics.
+ This package is the production successor to SendmailAnalyzer 9.4 and also
+ replaces the temporary sendmailanalyzer10 packages used during v10 testing.

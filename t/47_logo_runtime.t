@@ -1,0 +1,12 @@
+use strict; use warnings; use Test::More; use File::Temp qw(tempdir); use FindBin qw($Bin);
+my $tmp=tempdir(CLEANUP=>1);
+open my $cf,'>',"$tmp/sa10.conf" or die $!; print {$cf} "DB_FILE $tmp/none.sqlite3\n"; close $cf;
+local $ENV{SENDMAILANALYZER_CONFIG}="$tmp/sa10.conf";
+my $asset="$Bin/../web/assets/salogo.png"; ok(!-e $asset,'legacy third-party logo asset is not shipped');
+my $app=do "$Bin/../web/sendmailanalyzer.psgi"; die $@ if $@; die $! if !defined $app;
+my $res=$app->({PATH_INFO=>'/assets/salogo',QUERY_STRING=>''});
+is($res->[0],404,'legacy logo route is not exposed');
+open my $wf,'<:encoding(UTF-8)',"$Bin/../web/sendmailanalyzer.psgi" or die $!; local $/; my $body=<$wf>; close $wf;
+like($body,qr/SendmailAnalyzer Report/,'web source uses text branding');
+unlike($body,qr/brand-logo|assets\/salogo/,'web source does not reference the removed logo');
+done_testing;

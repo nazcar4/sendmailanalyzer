@@ -1,0 +1,229 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use File::Basename qw(basename);
+use File::Path qw(make_path);
+use POSIX qw(strftime);
+
+my $apply = grep { $_ eq '--apply' } @ARGV;
+my $backup_root = '/var/backups/sendmailanalyzer/apache';
+my $apache_root = $ENV{SENDMAILANALYZER_APACHE_ROOT} || '/etc/apache2';
+for (my $i=0; $i<@ARGV; $i++) {
+    if ($ARGV[$i] eq '--backup-dir' && defined $ARGV[$i+1]) { $backup_root=$ARGV[$i+1]; $i++; }
+}
+
+my @files = grep { -f $_ } (glob("$apache_root/sites-available/*.conf"), glob("$apache_root/conf-available/*.conf"));
+my $changed = 0;
+my $configured = 0;
+my @urls;
+my @backups;
+
+sub uniq {
+    my %s; return grep { !$s{$_}++ } @_;
+}
+sub slurp {
+    my ($file)=@_; open my $fh,'<',$file or return; local $/; my $s=<$fh>; close $fh; return $s;
+}
+sub has_custom_production_url {
+    my ($txt)=@_; return 0 if !defined $txt;
+    while ($txt =~ m{^\s*ProxyPass\s+(/[^\s]+/)\s+http://127\.0\.0\.1:9080/\s*$}mig) {
+        my $u=$1; return 1 if $u ne '/sareport/' && $u ne '/sareport10/';
+    }
+    return 0;
+}
+sub strip_deprecated_routes {
+    my ($txt)=@_; my $orig=$txt;
+    for my $name (qw(sareport sareport10)) {
+        my $q=quotemeta('/'.$name.'/');
+        my $bare=quotemeta('/'.$name);
+        $txt =~ s{^\s*RedirectMatch\s+301\s+\^$bare\$\s+$q\s*\r?\n}{}mig;
+        $txt =~ s{^\s*ProxyPass\s+$q\s+http://127\.0\.0\.1:9080/\s*\r?\n}{}mig;
+        $txt =~ s{^\s*ProxyPassReverse\s+$q\s+http://127\.0\.0\.1:9080/\s*\r?\n}{}mig;
+        $txt =~ s{^\s*<Location\s+$q\s*>.*?^\s*</Location>\s*\r?\n?}{}msig;
+    }
+    return ($txt,$txt ne $orig ? 1:0);
+}
+sub vhost_key {
+    my ($seg,$ord)=@_;
+    my ($listen)=$seg =~ m{<VirtualHost\s+([^>]+)>}i;
+    my ($server)=$seg =~ /^\s*ServerName\s+(\S+)/mi;
+    $listen='' if !defined $listen; $server='' if !defined $server;
+    $listen =~ s/^\s+|\s+$//g;
+    return join('|',lc($listen),lc($server),$ord||0);
+}
+sub indent_for {
+    my ($seg)=@_;
+    my ($i)=$seg =~ /^(\s*)(?:Alias|ProxyPass|RedirectMatch)\b/m;
+    return defined($i)?$i:($seg =~ /<VirtualHost\b/i ? '    ' : '');
+}
+sub require_lines {
+    my ($seg)=@_; my @require;
+    while ($seg =~ m{<Directory\s+["']?/usr/local/sendmailanalyzer/(?:www|html)/?["']?\s*>(.*?)</Directory>}sig) {
+        my $b=$1; push @require, ($b =~ /^\s*(Require\s+[^\r\n]+)\s*$/mig);
+    }
+    while ($seg =~ m{<Location\s+(/[^\s>]+/)\s*>(.*?)</Location>}sig) {
+        my ($url,$b)=($1,$2);
+        next if $url ne '/sareport/' && $url ne '/sareport10/' && $url ne '/reports/';
+        push @require, ($b =~ /^\s*(Require\s+[^\r\n]+)\s*$/mig);
+    }
+    return [uniq(@require)];
+}
+sub legacy_spec {
+    my ($seg)=@_;
+    my ($url)=$seg =~ m{^\s*Alias\s+(/[^\s]+)\s+["']?/usr/local/sendmailanalyzer/(?:www|html)/?["']?\s*$}mi;
+    return if !defined $url;
+    $url.='/' if $url !~ m{/$};
+    $url='/reports/' if $url eq '/sareport/' || $url eq '/sareport10/';
+    my $req=require_lines($seg); @$req=('Require local') if !@$req;
+    return {url=>$url,require=>$req,source=>'legacy'};
+}
+sub temp_spec {
+    my ($seg)=@_;
+    return if $seg !~ m{^\s*ProxyPass\s+/(?:sareport|sareport10)/\s+http://127\.0\.0\.1:9080/\s*$}mi;
+    my $req=require_lines($seg); @$req=('Require local') if !@$req;
+    return {url=>'/reports/',require=>$req,source=>'deprecated'};
+}
+sub production_spec {
+    my ($seg)=@_;
+    my ($url)=$seg =~ m{^\s*ProxyPass\s+(/[^\s]+/)\s+http://127\.0\.0\.1:9080/\s*$}mi;
+    return if !defined $url || $url eq '/sareport/' || $url eq '/sareport10/';
+    my @req;
+    my $q=quotemeta($url);
+    if ($seg =~ m{<Location\s+$q\s*>(.*?)</Location>}si) {
+        my $b=$1; @req=($b =~ /^\s*(Require\s+[^\r\n]+)\s*$/mig);
+    }
+    @req=('Require local') if !@req;
+    return {url=>$url,require=>[uniq(@req)],source=>'production'};
+}
+sub build_block {
+    my ($spec,$indent)=@_; my $url=$spec->{url}; my $bare=$url; $bare =~ s{/$}{};
+    my $req=join("\n",map { $indent.'    '.$_ } @{$spec->{require}});
+    return join("\n",
+        $indent.'# SendmailAnalyzer 10 - production reverse proxy',
+        $indent."RedirectMatch 301 ^$bare\$ $url",
+        $indent."ProxyPass        $url http://127.0.0.1:9080/",
+        $indent."ProxyPassReverse $url http://127.0.0.1:9080/",
+        '',
+        $indent."<Location $url>",
+        $req,
+        $indent.'    RequestHeader set X-Forwarded-Prefix "'.$bare.'"',
+        $indent.'</Location>',
+        ''
+    );
+}
+sub remove_legacy_and_temp {
+    my ($seg,$spec)=@_;
+    $seg =~ s{^\s*Alias\s+/[^\s]+\s+["']?/usr/local/sendmailanalyzer/(?:www|html)/?["']?\s*\r?\n}{}mig;
+    $seg =~ s{^\s*<Directory\s+["']?/usr/local/sendmailanalyzer/(?:www|html)/?["']?\s*>.*?^\s*</Directory>\s*\r?\n}{}msig;
+    $seg =~ s{^\s*RedirectMatch\s+301\s+\^/sareport\$\s+/sareport/\s*\r?\n}{}mig;
+    $seg =~ s{^\s*ProxyPass(?:Reverse)?\s+/sareport/\s+http://127\.0\.0\.1:9080/\s*\r?\n}{}mig;
+    $seg =~ s{^\s*<Location\s+/sareport/\s*>.*?^\s*</Location>\s*\r?\n}{}msig;
+    $seg =~ s{^\s*RedirectMatch\s+301\s+\^/sareport10\$\s+/sareport10/\s*\r?\n}{}mig;
+    $seg =~ s{^\s*ProxyPass(?:Reverse)?\s+/sareport10/\s+http://127\.0\.0\.1:9080/\s*\r?\n}{}mig;
+    $seg =~ s{^\s*<Location\s+/sareport10/\s*>.*?^\s*</Location>\s*\r?\n}{}msig;
+    # If a previous attempt already generated the target block, remove it before
+    # rebuilding so the operation remains idempotent while preserving ACLs.
+    my $url=$spec->{url}; my $bare=$url; $bare =~ s{/$}{};
+    my $q=quotemeta($url); my $qb=quotemeta($bare);
+    $seg =~ s{^\s*# SendmailAnalyzer 10 - production reverse proxy\s*\r?\n\s*RedirectMatch\s+301\s+\^$qb\$\s+$q\s*\r?\n\s*ProxyPass\s+$q\s+http://127\.0\.0\.1:9080/\s*\r?\n\s*ProxyPassReverse\s+$q\s+http://127\.0\.0\.1:9080/\s*\r?\n\s*<Location\s+$q\s*>.*?^\s*</Location>\s*\r?\n}{}msig;
+    return $seg;
+}
+sub insert_block {
+    my ($seg,$spec)=@_; my $indent=indent_for($seg); my $block=build_block($spec,$indent);
+    if ($seg =~ /^\s*ProxyPass\s+\/\.well-known\s+!/m) {
+        $seg =~ s{(^\s*ProxyPass\s+\/\.well-known\s+!.*$)}{$block$1}m;
+    } elsif ($seg =~ /<\/VirtualHost>/i) {
+        $seg =~ s{\s*</VirtualHost>}{$block.$indent.'</VirtualHost>'}eis;
+    } else {
+        $seg .= "\n" if $seg !~ /\n\z/;
+        $seg .= $block;
+    }
+    return $seg;
+}
+sub transform_segment {
+    my ($seg,$recover)=@_;
+    if (my $prod=production_spec($seg)) {
+        return ($seg,0,1,$prod->{url});
+    }
+    my $spec=legacy_spec($seg) || temp_spec($seg) || $recover;
+    return ($seg,0,0,undef) if !$spec;
+    my $orig=$seg;
+    $seg=remove_legacy_and_temp($seg,$spec);
+    $seg=insert_block($seg,$spec);
+    return ($seg,$seg ne $orig ? 1:0,1,$spec->{url});
+}
+sub recovery_specs {
+    my ($file)=@_; my %spec;
+    my $base=basename($file);
+    my @cand=(glob("$backup_root/$base.*"), glob("$backup_root/sites-available__${base}.*"), glob("$backup_root/conf-available__${base}.*"));
+    @cand=reverse sort grep { -f $_ } uniq(@cand);
+    for my $bak (@cand) {
+        my $txt=slurp($bak); next if !defined $txt;
+        my $ord=0;
+        while ($txt =~ m{(<VirtualHost\b[^>]*>.*?</VirtualHost>)}sig) {
+            $ord++; my $seg=$1; my $s=legacy_spec($seg) || temp_spec($seg); next if !$s;
+            my $key=vhost_key($seg,$ord); $spec{$key}=$s if !exists $spec{$key};
+        }
+        last if %spec;
+    }
+    return \%spec;
+}
+
+my $custom_production_present=0;
+for my $scan_file (@files) { my $t=slurp($scan_file); if (has_custom_production_url($t)) { $custom_production_present=1; last; } }
+
+for my $file (@files) {
+    my $text=slurp($file); next if !defined $text;
+    my $orig=$text;
+    my $default_stripped=0;
+    if ($custom_production_present) {
+        ($text,$default_stripped)=strip_deprecated_routes($text);
+    }
+    # Recovery from backups is useful only inside the same site file when that
+    # file already carries a live non-deprecated route (for example, repairing
+    # a missing HTTPS sibling from an older /reports Alias backup).  If the only
+    # live production route is in another file, do not let stale backups revive
+    # retired /sareport[/10] integrations here.
+    my $file_has_custom_production=has_custom_production_url($orig);
+    my $recover=(!$custom_production_present || $file_has_custom_production)
+        ? recovery_specs($file) : {};
+    my $ord=0; my $saw_vhost=0; my $file_changed=$default_stripped ? 1:0;
+    $changed++ if $default_stripped;
+    $text =~ s{(<VirtualHost\b[^>]*>.*?</VirtualHost>)}{
+        $saw_vhost=1; $ord++; my $seg=$1; my $key=vhost_key($seg,$ord);
+        my ($new,$c,$conf,$url)=transform_segment($seg,$recover->{$key});
+        $changed += $c; $file_changed ||= $c; $configured += $conf; push @urls,$url if defined $url;
+        $new;
+    }gise;
+    if (!$saw_vhost) {
+        my ($new,$c,$conf,$url)=transform_segment($text,undef);
+        $text=$new; $changed += $c; $file_changed ||= $c; $configured += $conf; push @urls,$url if defined $url;
+    }
+    next if !$file_changed || $text eq $orig;
+    if ($apply) {
+        make_path($backup_root,{mode=>0700}) if !-d $backup_root;
+        my $stamp=strftime('%Y%m%d-%H%M%S',localtime);
+        my $safe=$file; $safe =~ s{^\Q$apache_root\E/?}{}; $safe =~ s{/}{__}g;
+        my $bak="$backup_root/$safe.$stamp";
+        open my $bf,'>',$bak or die "cannot create $bak: $!\n"; print {$bf} $orig; close $bf; chmod 0600,$bak;
+        open my $of,'>',$file or die "cannot write $file: $!\n"; print {$of} $text; close $of;
+        push @backups, [$file,$bak];
+        print "Migrated/repaired Apache SendmailAnalyzer integration: $file (backup $bak)\n";
+    } else {
+        print "Would migrate/repair Apache SendmailAnalyzer integration: $file\n";
+    }
+}
+if ($apply && $changed && $apache_root eq '/etc/apache2' && -x '/usr/sbin/apache2ctl') {
+    my $rc=system('/usr/sbin/apache2ctl','configtest');
+    if ($rc != 0) {
+        warn "Apache configtest failed; restoring pre-migration files\n";
+        for my $pair (reverse @backups) {
+            my($file,$bak)=@$pair;
+            if (open my $in,'<',$bak) { local $/; my $old=<$in>; close $in; if(open my $out,'>',$file){print {$out} $old; close $out;} }
+        }
+        system('/usr/sbin/apache2ctl','configtest');
+        exit 1;
+    }
+}
+print "Apache migration changed=$changed configured=$configured urls=",join(',',uniq(grep {defined && length} @urls)),"\n";
+exit 0;

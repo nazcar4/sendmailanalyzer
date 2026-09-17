@@ -1,0 +1,35 @@
+#!/usr/bin/env perl
+use strict; use warnings;
+use FindBin qw($Bin); use lib '/usr/lib/sendmailanalyzer/lib'; use lib "$Bin/../lib";
+use Getopt::Long; use File::Basename qw(dirname); use SendmailAnalyzer::Config;
+my $config='/etc/sendmailanalyzer.conf'; my ($cutoff,$since,$db,$legacy,$resume,$year); my (@extra_mail,@extra_rspamd);
+GetOptions('config=s'=>\$config,'cutoff=s'=>\$cutoff,'since=s'=>\$since,'db=s'=>\$db,'legacy=s'=>\$legacy,'mail-history=s@'=>\@extra_mail,'rspamd-history=s@'=>\@extra_rspamd,'resume!'=>\$resume,'year=i'=>\$year) or die "usage: sa10_migrate --cutoff YYYY-MM-DD --since YYYY-MM-DD [--mail-history file ...] [--rspamd-history file ...] [--resume]\n";
+die "--cutoff YYYY-MM-DD required\n" if !$cutoff || $cutoff !~ /^\d{4}-\d{2}-\d{2}$/;
+die "--since YYYY-MM-DD required\n" if !$since || $since !~ /^\d{4}-\d{2}-\d{2}$/;
+die "--since must be after --cutoff\n" if $since le $cutoff;
+my $cfg=SendmailAnalyzer::Config->load($config); $db||=$cfg->{DB_FILE}; $legacy||=$cfg->{LEGACY_DATA_DIR}; $year||=substr($since,0,4);
+die "Run sa10_migrate as the sendmailanalyzer service user, not root\n" if $>==0 && $db =~ m{^/var/lib/sendmailanalyzer(?:/|$)};
+if (-e $db && !$resume) { die "Target DB already exists: $db. Refusing to merge into it without --resume.\n"; }
+my $import="$Bin/sa10_import_legacy"; my $collect="$Bin/sa10_collect"; my $audit="$Bin/sa10_migration_audit";
+$import='/usr/bin/sa10_import_legacy' if !-x $import && -x '/usr/bin/sa10_import_legacy';
+$collect='/usr/bin/sa10_collect' if !-x $collect && -x '/usr/bin/sa10_collect';
+$audit='/usr/bin/sa10_migration_audit' if !-x $audit && -x '/usr/bin/sa10_migration_audit';
+print "SendmailAnalyzer 10 cold migration\n";
+print "legacy=$legacy cutoff=$cutoff live_since=$since db=$db\n";
+print "STEP 1/4: import legacy through cutoff\n";
+system($^X,$import,'--config',$config,'--from',$legacy,'--db',$db,'--until',$cutoff)==0 or die "Legacy import failed\n";
+my @logs; push @logs,@extra_mail; push @logs,$cfg->{LOG_FILE} if $cfg->{LOG_FILE}; push @logs,@extra_rspamd; push @logs,$cfg->{RSPAMD_LOG_FILE} if $cfg->{RSPAMD_LOG_FILE};
+my %seen; @logs=grep { defined($_) && length($_) && -f $_ && !$seen{$_}++ } @logs;
+die "No replay log sources found\n" if !@logs;
+print "STEP 2/4: replay live-era logs and seed collector offsets\n";
+my @cmd=($^X,$collect,'--config',$config,'--replay','--seed-state','--since',$since,'--year',$year,'--db',$db); push @cmd,('--log',$_) for @logs;
+system(@cmd)==0 or die "Live-era replay failed\n";
+print "STEP 3/4: SQLite integrity and migration summary\n";
+require SendmailAnalyzer::Storage::SQLite; my $st=SendmailAnalyzer::Storage::SQLite->new(file=>$db,readonly=>1); my $dbh=$st->dbh;
+my ($qc)=$dbh->selectrow_array('PRAGMA quick_check'); die "SQLite quick_check failed: $qc\n" if !defined($qc) || $qc ne 'ok';
+my ($messages)=$dbh->selectrow_array('SELECT COUNT(*) FROM messages'); my ($events)=$dbh->selectrow_array('SELECT COUNT(*) FROM events'); my ($recipients)=$dbh->selectrow_array('SELECT COUNT(*) FROM recipients');
+print "quick_check=ok messages=$messages events=$events recipients=$recipients\n";
+my $states=$dbh->selectall_arrayref('SELECT source,inode,offset,updated_at FROM collector_state ORDER BY source',{Slice=>{}}); for my $r(@$states){ print "state source=$r->{source} inode=$r->{inode} offset=$r->{offset} updated=$r->{updated_at}\n"; }
+print "STEP 4/4: reconcile exact legacy-imported days\n";
+system($^X,$audit,'--config',$config,'--legacy',$legacy,'--db',$db,'--exact-through',$cutoff)==0 or die "Migration audit failed\n";
+print "RESULT: PASS\n";

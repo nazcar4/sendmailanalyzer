@@ -1,0 +1,30 @@
+Building SendmailAnalyzer 10 from this source tree
+==================================================
+
+This is a native Debian source tree. The debian/ directory is complete and can
+build the binary package directly.
+
+Install the Build-Depends declared in debian/control (or let normal Debian build
+tooling resolve them), then run from the source root:
+
+  dpkg-buildpackage -us -uc -b
+
+The resulting package is written to the parent directory, for example:
+
+  ../sendmailanalyzer_VERSION_all.deb
+
+To run the project tests independently:
+
+  prove -Ilib t
+
+A convenience reproducible builder is also provided:
+
+  ./scripts/build-deb.sh /path/to/sendmailanalyzer_VERSION_all.deb
+
+On a running Debian/systemd host, the final package performs post-install
+validation and then enables/restarts only the SendmailAnalyzer collector and web
+services. In a chroot/build environment without a running systemd instance it
+installs cleanly without attempting to start services.
+
+Current package revisions preserve an existing v10 SQLite database and do not
+automatically import or retire SendmailAnalyzer 9.4 data.

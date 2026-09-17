@@ -1,0 +1,14 @@
+use strict; use warnings; use Test::More; use FindBin qw($Bin); use lib "$Bin/../lib";
+use File::Path qw(make_path remove_tree); use SendmailAnalyzer::MigrationPreflight;
+my $root="/tmp/sa10-preflight-$$";
+make_path("$root/mailhost/2026/09/14","$root/mailhost/2026/09/15");
+open my $a,'>',"$root/mailhost/2026/09/14/senders.dat" or die $!; print $a "120000:AAA111:user\@example:1:1:relay\n120001:BBB222:user\@example:1:1:relay\n"; close $a;
+open my $b,'>',"$root/mailhost/2026/09/15/senders.dat" or die $!; print $b "130000:CCC333:user\@example:1:1:relay\n"; close $b;
+my $r=SendmailAnalyzer::MigrationPreflight->scan(root=>$root);
+is($r->{sender_files},2,'two sender files'); is($r->{sender_rows},3,'three sender rows'); is($r->{duplicate_queue_ids},0,'no duplicate Queue-ID'); is($r->{min_date},'2026-09-14','min date'); is($r->{max_date},'2026-09-15','max date');
+open $b,'>>',"$root/mailhost/2026/09/15/senders.dat" or die $!; print $b "130001:AAA111:other\@example:1:1:relay\n"; close $b;
+$r=SendmailAnalyzer::MigrationPreflight->scan(root=>$root);
+is($r->{duplicate_queue_ids},1,'Queue-ID reuse across days detected and reported'); is($r->{duplicate_examples}[0]{queue_id},'AAA111','duplicate qid reported'); is_deeply($r->{duplicate_examples}[0]{locations},['mailhost/2026-09-14','mailhost/2026-09-15'],'locations reported');
+open $b,'>>',"$root/mailhost/2026/09/15/senders.dat" or die $!; print $b "130002::broken\n"; close $b;
+$r=SendmailAnalyzer::MigrationPreflight->scan(root=>$root); is($r->{malformed_sender_rows},1,'malformed row detected');
+remove_tree($root); done_testing;

@@ -1,0 +1,11 @@
+use strict; use warnings; use Test::More; use FindBin qw($Bin);
+my $web="$Bin/../web/sendmailanalyzer.psgi"; open my $fh,'<',$web or die $!; local $/; my $w=<$fh>;
+like($w,qr/stats_range\(\$from,\$to\)/,'dashboard statistics obey selected day/hour range');
+like($w,qr/recent_messages\(from=>\$from,to=>\$to/,'recent activity obeys selected period');
+like($w,qr/top_senders\(8,\$from,\$to\)/,'top senders obey selected period');
+like($w,qr/top_recipients\(8,\$from,\$to\)/,'top recipients obey selected period');
+my $st="$Bin/../lib/SendmailAnalyzer/Storage/SQLite.pm"; open my $sf,'<',$st or die $!; local $/; my $s=<$sf>;
+like($s,qr/sub stats_range/,'storage exposes bounded statistics');
+like($s,qr/sub flow_summary/,'storage exposes period flow summary');
+like($s,qr/COALESCE\(SUM\(size\),0\) size_bytes/,'hourly view includes traffic volume');
+done_testing;

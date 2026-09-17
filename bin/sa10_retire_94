@@ -1,0 +1,95 @@
+#!/bin/sh
+# Retire a manual/source SendmailAnalyzer 9.4 installation after v10 has been
+# migrated, validated and started.  Every removed legacy object is backed up.
+
+main() {
+    BACKUP_ROOT=${1:-/var/backups/sendmailanalyzer}
+    stamp=$(date +%Y%m%d-%H%M%S)
+    DEST="$BACKUP_ROOT/retired-9.4-$stamp"
+    mkdir -p "$DEST/files" || return 1
+    chmod 0700 "$DEST" 2>/dev/null || true
+
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        systemctl stop sendmailanalyzer.service >/dev/null 2>&1 || true
+        systemctl disable sendmailanalyzer.service >/dev/null 2>&1 || true
+    fi
+
+    # If an old daemon is running outside systemd, stop it only when its pidfile
+    # identifies a process whose command line contains sendmailanalyzer.
+    for pf in /run/sendmailanalyzer.pid /var/run/sendmailanalyzer.pid; do
+        [ -r "$pf" ] || continue
+        pid=$(cat "$pf" 2>/dev/null || true)
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        if [ -r "/proc/$pid/cmdline" ] && tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q 'sendmailanalyzer'; then
+            kill -TERM "$pid" 2>/dev/null || true
+            n=0; while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 20 ]; do sleep 0.1; n=$((n+1)); done
+        fi
+        rm -f "$pf"
+    done
+
+    # Remove only legacy sa_cache cron lines, retaining every unrelated line.
+    if [ -d /etc/cron.d ]; then
+        for f in /etc/cron.d/*; do
+            [ -f "$f" ] || continue
+            if grep -Eq '(^|[[:space:]])([^[:space:]]*/)?sa_cache([[:space:]]|$)' "$f"; then
+                cp -a "$f" "$DEST/files/cron.$(basename "$f")" || return 1
+                awk '!/(^|[[:space:]])([^[:space:]]*\/)?sa_cache([[:space:]]|$)/' "$f" > "$f.sa10tmp" || return 1
+                cat "$f.sa10tmp" > "$f"; rm -f "$f.sa10tmp"
+            fi
+        done
+    fi
+    if command -v crontab >/dev/null 2>&1; then
+        oldcron=$(mktemp) || return 1
+        newcron=$(mktemp) || { rm -f "$oldcron"; return 1; }
+        if crontab -l > "$oldcron" 2>/dev/null; then
+            cp -a "$oldcron" "$DEST/files/root.crontab" || true
+            awk '!/(^|[[:space:]])([^[:space:]]*\/)?sa_cache([[:space:]]|$)/' "$oldcron" > "$newcron"
+            if ! cmp -s "$oldcron" "$newcron"; then crontab "$newcron" || { rm -f "$oldcron" "$newcron"; return 1; }; fi
+        fi
+        rm -f "$oldcron" "$newcron"
+    fi
+
+    # Remove obsolete logrotate hooks which restart/reload the 9.4 daemon.
+    if [ -d /etc/logrotate.d ]; then
+        for f in /etc/logrotate.d/*; do
+            [ -f "$f" ] || continue
+            if grep -Eq 'sendmailanalyzer(\.service|\.pid|[[:space:]])' "$f"; then
+                cp -a "$f" "$DEST/files/logrotate.$(basename "$f")" || return 1
+                awk '!/sendmailanalyzer(\.service|\.pid|[[:space:]])/' "$f" > "$f.sa10tmp" || return 1
+                cat "$f.sa10tmp" > "$f"; rm -f "$f.sa10tmp"
+            fi
+        done
+    fi
+
+    backup_remove_file() {
+        f=$1
+        [ -e "$f" ] || [ -L "$f" ] || return 0
+        # Never remove a file currently owned by a different installed package.
+        owner=$(dpkg-query -S "$f" 2>/dev/null | head -1 | cut -d: -f1 || true)
+        if [ -n "$owner" ] && [ "$owner" != sendmailanalyzer ]; then
+            printf '%s\n' "Keeping package-owned legacy path $f (owner: $owner)"
+            return 0
+        fi
+        safe=$(printf '%s' "$f" | sed 's#^/##; s#/#__#g')
+        cp -a "$f" "$DEST/files/$safe" || return 1
+        rm -rf "$f" || return 1
+    }
+
+    for f in /usr/bin/sendmailanalyzer /usr/bin/sa_cache /usr/local/bin/sendmailanalyzer /usr/local/bin/sa_cache /usr/lib/cgi-bin/sa_report.cgi /etc/systemd/system/sendmailanalyzer.service /usr/lib/systemd/system/sendmailanalyzer.service /lib/systemd/system/sendmailanalyzer.service /etc/init.d/sendmailanalyzer; do
+        backup_remove_file "$f" || return 1
+    done
+
+    # The complete source/manual installation, including flat-file history, is
+    # retained as rollback material but removed from its live 9.4 pathname.
+    if [ -d /usr/local/sendmailanalyzer ]; then
+        if mv /usr/local/sendmailanalyzer "$DEST/usr-local-sendmailanalyzer" 2>/dev/null; then :; else
+            cp -a /usr/local/sendmailanalyzer "$DEST/usr-local-sendmailanalyzer" || return 1
+            rm -rf /usr/local/sendmailanalyzer || return 1
+        fi
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
+    printf '%s\n' "$DEST"
+    return 0
+}
+main "$@"

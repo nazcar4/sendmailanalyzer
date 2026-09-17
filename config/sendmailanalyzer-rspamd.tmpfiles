@@ -1,0 +1,5 @@
+# SendmailAnalyzer 10: least-privilege access to Rspamd logs.
+# Existing directory: traversal only (no listing/write).
+a+ /var/log/rspamd - - - - u:sendmailanalyzer:--x
+# Future files/directories inherit read/traverse access for the collector.
+a+ /var/log/rspamd - - - - d:u:sendmailanalyzer:r-x

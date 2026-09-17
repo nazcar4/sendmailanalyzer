@@ -1,0 +1,118 @@
+#!/usr/bin/env perl
+use strict; use warnings;
+use FindBin qw($Bin); use lib '/usr/lib/sendmailanalyzer/lib'; use lib "$Bin/../lib";
+use Getopt::Long; use Fcntl qw(SEEK_SET SEEK_CUR); use Digest::SHA qw(sha1_hex); use Sys::Hostname qw(hostname); use SendmailAnalyzer::Config; use SendmailAnalyzer::Parser; use SendmailAnalyzer::Classifier; use SendmailAnalyzer::Storage::SQLite; use SendmailAnalyzer::TimeUtil; use SendmailAnalyzer::LogReader;
+
+my $config='/etc/sendmailanalyzer.conf'; my @logs; my ($db,$follow,$once,$replay,$year,$from_start,$prune,$since,$seed_state,$historical_day)=(undef,0,0,0,undef,0,0,undef,0,undef);
+GetOptions('config=s'=>\$config,'log=s@'=>\@logs,'db=s'=>\$db,'follow!'=>\$follow,'once!'=>\$once,'replay!'=>\$replay,'year=i'=>\$year,'from-start!'=>\$from_start,'prune!'=>\$prune,'since=s'=>\$since,'seed-state!'=>\$seed_state,'historical-day=s'=>\$historical_day) or die "usage: sa10_collect [--config file] [--follow|--once|--replay] [--log file ...] [--db file] [--year YYYY] [--since YYYY-MM-DD] [--from-start] [--seed-state] [--historical-day YYYY-MM-DD]\n";
+die "--since must be YYYY-MM-DD\n" if defined($since) && $since !~ /^\d{4}-\d{2}-\d{2}$/;
+die "--historical-day must be YYYY-MM-DD and is replay-only\n" if defined($historical_day) && ($historical_day !~ /^\d{4}-\d{2}-\d{2}$/ || !$replay);
+my $cfg=SendmailAnalyzer::Config->load($config); $db||=$cfg->{DB_FILE}; $follow=1 if !$once && !$replay && !$follow;
+if (!@logs) {
+    push @logs,$cfg->{LOG_FILE} if $cfg->{LOG_FILE};
+    push @logs,$cfg->{RSPAMD_LOG_FILE} if $cfg->{RSPAMD_LOG_FILE} && (!@logs || $cfg->{RSPAMD_LOG_FILE} ne $cfg->{LOG_FILE});
+}
+my %seen; @logs=grep { defined($_) && length($_) && !$seen{$_}++ } @logs;
+die "No log sources configured\n" if !@logs;
+my %live_source=map { defined($_) && length($_) ? ($_=>1) : () } ($cfg->{LOG_FILE},$cfg->{RSPAMD_LOG_FILE});
+if ($> == 0 && $db =~ m{^/var/lib/sendmailanalyzer(?:/|$)}) { die "Refusing to create/write the service database as root. Run through systemd or: runuser -u sendmailanalyzer -- /usr/bin/sa10_collect ...\n"; }
+my $native_host=$cfg->{HOSTNAME} || hostname();
+my $storage=SendmailAnalyzer::Storage::SQLite->new(file=>$db);
+my $classifier=SendmailAnalyzer::Classifier->new(
+    local_domains=>$cfg->{LOCAL_DOMAINS},
+    resolve_message_id=>sub { $storage->resolve_message_id($_[0]) },
+    load_message=>sub { $storage->load_classifier_message($_[0]) },
+);
+my $memory_limit=$cfg->{MEMORY_MESSAGE_LIMIT} || 10000; my $parsed_since_prune=0;
+
+sub historical_qid {
+    my ($qid,$date)=@_; return $qid if !$historical_day || !$qid;
+    my ($first)=eval { $storage->dbh->selectrow_array('SELECT first_seen FROM messages WHERE queue_id=?',undef,$qid) };
+    return $qid if !defined($first) || $first eq '' || substr($first,0,10) eq $date;
+    my $tag=substr(sha1_hex(join("\0",$native_host||'', $date||'', $qid||'')),0,12);
+    my $d=$date; $d=~s/[^0-9]//g;
+    return $qid.'__L'.$d.'_'.$tag;
+}
+
+sub process_line {
+    my ($line,$source)=@_; my $e=SendmailAnalyzer::Parser->parse_line($line, defined $year?(year=>$year):(), host=>$native_host, source_file=>$source, header_routes=>$cfg->{HEADER_ROUTES}, header_ignore=>$cfg->{HEADER_IGNORE}); return 0 if !$e;
+    my $h=$e->as_hash;
+    return 0 if defined($since) && defined($h->{timestamp}) && $h->{timestamp} lt $since.'T00:00:00';
+    my $display_qid;
+    if ($historical_day && defined($h->{queue_id}) && $h->{queue_id} ne '') {
+        $display_qid=$h->{queue_id};
+        my $internal=historical_qid($display_qid,$historical_day);
+        if ($internal ne $display_qid) { $e->{historical_queue_id}=$display_qid; $e->{queue_id}=$internal; $h=$e->as_hash; }
+    }
+    if ($historical_day && defined($h->{source_queue_id}) && $h->{source_queue_id} ne '') {
+        my $src=$h->{source_queue_id}; $e->{source_queue_id}=historical_qid($src,$historical_day); $h=$e->as_hash;
+    }
+    $storage->store_event($e); $storage->store_delivery_recipient($h) if ($h->{type}||'') eq 'delivery';
+    my $qid=$classifier->add_event($e); if ($qid) { my $m=$classifier->message_for($qid); if ($m) { $m->{display_queue_id}=$display_qid if defined($display_qid) && $qid ne $display_qid; $storage->upsert_message($m); } }
+    $parsed_since_prune++; if ($parsed_since_prune>=1000) { $classifier->prune_cache($memory_limit); $parsed_since_prune=0; }
+    return 1;
+}
+
+sub replay_file {
+    my ($path)=@_;
+    my @st=stat($path); die "Cannot stat $path: $!" if !@st;
+    my ($fh,$compressed)=SendmailAnalyzer::LogReader->open_reader($path); my ($total,$parsed)=(0,0);
+    while(my $line=<$fh>) { $total++; $parsed+=process_line($line,$path); }
+    my $off=$compressed ? $st[7] : tell($fh); close $fh;
+    # Historical .1/.gz files are replay-only. Seed offsets only for the live
+    # configured sources so systemd can continue those exact files later.
+    $storage->set_state($path,$st[1],$off,SendmailAnalyzer::TimeUtil->now_iso)
+        if $seed_state && !$compressed && $live_source{$path};
+    return ($total,$parsed);
+}
+
+if ($replay || $once) {
+    my ($all_total,$all_parsed)=(0,0);
+    for my $path (@logs) {
+        if (!-f $path) { warn "Skipping missing log source $path\n"; next; }
+        my ($t,$p)=replay_file($path); $all_total+=$t; $all_parsed+=$p; print "source=$path processed=$t parsed=$p\n";
+    }
+    $storage->prune_raw_events($cfg->{RAW_RETENTION_DAYS}) if $prune; print "processed=$all_total parsed=$all_parsed db=$db\n"; exit 0;
+}
+
+$SIG{TERM}=sub{$follow=0}; $SIG{INT}=sub{$follow=0}; $SIG{HUP}=sub{};
+my %src;
+sub open_log {
+    my ($path)=@_; die "Cannot follow compressed log source $path\n" if $path =~ /\.gz\z/i; my @st=stat($path); die "Cannot stat $path: $!" if !@st; my $ino=$st[1];
+    open my $new,'<',$path or die "Cannot open $path: $!";
+    my $state=$storage->get_state($path); my $off=0;
+    if (!$from_start && $state && defined $state->{inode} && $state->{inode}==$ino && defined $state->{offset} && $state->{offset} <= $st[7]) { $off=$state->{offset}; }
+    elsif (!$from_start && !$state) { $off=$st[7]; }
+    seek($new,$off,SEEK_SET);
+    $src{$path}={fh=>$new,inode=>$ino,offset=>$off,since_state=>0};
+}
+for my $path (@logs) {
+    if (!-f $path) { warn "Skipping missing log source $path\n"; next; }
+    open_log($path);
+}
+die "No readable log sources available\n" if !keys %src;
+my $last_raw_prune=time;
+$storage->prune_raw_events($cfg->{RAW_RETENTION_DAYS}) if ($cfg->{RAW_RETENTION_DAYS}||0)>0;
+while ($follow) {
+    if (($cfg->{RAW_RETENTION_DAYS}||0)>0 && time-$last_raw_prune >= 86400) { $storage->prune_raw_events($cfg->{RAW_RETENTION_DAYS}); $last_raw_prune=time; }
+    my $global_read=0;
+    for my $path (sort keys %src) {
+        my $s=$src{$path}; my $fh=$s->{fh}; my $read_any=0;
+        while (my $line=<$fh>) {
+            $read_any=1; $global_read=1; process_line($line,$path); $s->{offset}=tell($fh); $s->{since_state}++;
+            if ($s->{since_state}>=100) { $storage->set_state($path,$s->{inode},$s->{offset},SendmailAnalyzer::TimeUtil->now_iso); $s->{since_state}=0; }
+        }
+        # Perl/stdio keeps EOF sticky on a regular filehandle. A no-op seek
+        # clears EOF without changing the position, so appended lines are visible
+        # on the next follow iteration.
+        seek($fh,0,SEEK_CUR) or die "Cannot refresh EOF state for $path: $!";
+        my @st=stat($path);
+        if (@st && ($st[1] != $s->{inode} || $st[7] < $s->{offset})) {
+            $storage->set_state($path,$s->{inode},$s->{offset},SendmailAnalyzer::TimeUtil->now_iso); close $fh; open_log($path); next;
+        }
+        if ($read_any) { $storage->set_state($path,$s->{inode},$s->{offset},SendmailAnalyzer::TimeUtil->now_iso); $s->{since_state}=0; }
+    }
+    sleep 1 if !$global_read;
+}
+for my $path (keys %src) { my $s=$src{$path}; $storage->set_state($path,$s->{inode},$s->{offset},SendmailAnalyzer::TimeUtil->now_iso); }
+exit 0;

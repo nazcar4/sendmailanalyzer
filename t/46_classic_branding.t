@@ -1,0 +1,10 @@
+use strict; use warnings; use utf8; use Test::More; use FindBin qw($Bin);
+my $f="$Bin/../web/sendmailanalyzer.psgi"; open my $fh,'<:encoding(UTF-8)',$f or die $!; local $/; my $s=<$fh>;
+like($s,qr/SendmailAnalyzer Report/,'full SendmailAnalyzer text brand is rendered');
+unlike($s,qr/class="brand-logo"/,'third-party image logo is not rendered');
+unlike($s,qr{/assets/salogo},'no legacy logo route is exposed');
+unlike($s,qr/sub packaged_logo_file/,'no packaged logo helper remains');
+unlike($s,qr/Sendmail\.org/,'web branding has no third-party logo attribution dependency');
+like($s,qr/Gilles Darold/,'original author is credited');
+like($s,qr/v10 by Nazcar/,'v10 project credit is visible');
+done_testing;

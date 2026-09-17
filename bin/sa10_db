@@ -1,0 +1,5 @@
+#!/usr/bin/env perl
+use strict; use warnings; use FindBin qw($Bin); use lib '/usr/lib/sendmailanalyzer/lib'; use lib "$Bin/../lib"; use Getopt::Long; use JSON::PP qw(encode_json); use SendmailAnalyzer::Config; use SendmailAnalyzer::Storage::SQLite;
+my $config='/etc/sendmailanalyzer.conf'; my ($db,$cmd,$q,$limit)=('','stats','',50); GetOptions('config=s'=>\$config,'db=s'=>\$db,'cmd=s'=>\$cmd,'q=s'=>\$q,'limit=i'=>\$limit) or die;
+my $cfg=SendmailAnalyzer::Config->load($config); $db||=$cfg->{DB_FILE}; my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$db,readonly=>1);
+if($cmd eq 'stats'){ print encode_json($s->stats()),"\n"; } elsif($cmd eq 'quick-check'){ my ($qc)=$s->dbh->selectrow_array('PRAGMA quick_check'); print ((defined($qc)?$qc:'unknown')."\n"); exit((defined($qc) && $qc eq 'ok')?0:2); } elsif($cmd eq 'search'){ print encode_json($s->recent_messages(q=>$q,limit=>$limit)),"\n"; } elsif($cmd eq 'message'){ my $m=$s->message_detail($q); print encode_json($m||{}),"\n"; } else { die "unknown --cmd $cmd\n"; }

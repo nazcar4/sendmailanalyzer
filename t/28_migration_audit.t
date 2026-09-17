@@ -1,0 +1,10 @@
+use strict; use warnings; use Test::More; use File::Temp qw(tempdir); use File::Path qw(make_path); use FindBin;
+use lib "$FindBin::Bin/../lib"; use SendmailAnalyzer::MigrationAudit;
+my $tmp=tempdir(CLEANUP=>1); my $d="$tmp/mailhost/2026/09/06"; make_path($d);
+open my $f,'>',"$d/senders.dat" or die $!; print $f "010000:ABC:a\@x:1:1:r\n"; close $f;
+open $f,'>',"$d/recipient.dat" or die $!; print $f "010001:ABC:u\@x:r:Sent\n"; close $f;
+open $f,'>',"$d/auth.dat" or die $!; print $f "010002:user:r:PLAIN:SMTP\n"; close $f;
+my $days=SendmailAnalyzer::MigrationAudit->discover_days($tmp); is(@$days,1,'discovers one legacy day'); is($days->[0]{date},'2026-09-06','date');
+my $c=SendmailAnalyzer::MigrationAudit->legacy_counts($d); is($c->{messages},1,'message count'); is($c->{recipients},1,'recipient count'); is($c->{sent},1,'sent count'); is($c->{auth},1,'auth count');
+open my $m,'<',"$FindBin::Bin/../bin/sa10_migrate" or die $!; local $/; my $src=<$m>; close $m; like($src,qr/STEP 4\/4: reconcile exact legacy-imported days/,'migrate runs final audit'); like($src,qr/--exact-through/,'cutoff passed to audit');
+done_testing;

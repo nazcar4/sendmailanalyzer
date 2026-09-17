@@ -1,0 +1,34 @@
+#!/usr/bin/env perl
+use strict; use warnings;
+use FindBin qw($Bin); use lib '/usr/lib/sendmailanalyzer/lib'; use lib "$Bin/../lib";
+use Getopt::Long; use File::Basename qw(dirname); use SendmailAnalyzer::Config; use SendmailAnalyzer::MigrationPreflight; use SendmailAnalyzer::V10;
+my $config='/etc/sendmailanalyzer.conf'; my ($root,$db,$max_examples)=(undef,undef,20);
+GetOptions('config=s'=>\$config,'legacy=s'=>\$root,'db=s'=>\$db,'examples=i'=>\$max_examples) or die "usage: sa10_migration_check [--config file] [--legacy DIR] [--db FILE] [--examples N]\n";
+my $cfg=SendmailAnalyzer::Config->load($config); $root||=$cfg->{LEGACY_DATA_DIR}; $db||=$cfg->{DB_FILE}; $max_examples=0 if $max_examples<0;
+my $ok=1;
+print "SendmailAnalyzer $SendmailAnalyzer::V10::VERSION migration preflight\n";
+printf "%-30s %s (%s)\n",'legacy root',(-d $root?'OK':'MISSING'),$root; $ok=0 if !-d $root;
+my $r=SendmailAnalyzer::MigrationPreflight->scan(root=>$root);
+printf "%-30s %d\n",'senders.dat files',$r->{sender_files};
+printf "%-30s %d\n",'sender rows',$r->{sender_rows};
+printf "%-30s %d\n",'unique Queue-IDs',$r->{unique_queue_ids};
+printf "%-30s %d\n",'malformed sender rows',$r->{malformed_sender_rows};
+printf "%-30s %d\n",'Queue-IDs reused across days',$r->{duplicate_queue_ids};
+printf "%-30s %s\n",'hosts',(@{$r->{hosts}}?join(',',@{$r->{hosts}}):'(none)');
+printf "%-30s %s .. %s\n",'date range',($r->{min_date}//'(none)'),($r->{max_date}//'(none)');
+if ($r->{duplicate_queue_ids}) {
+    print "\nQueue-ID reuse examples (supported; generations are disambiguated internally):\n";
+    my $n=0; for my $d (@{$r->{duplicate_examples}}) { last if $n++ >= $max_examples; print "  $d->{queue_id}: ",join(', ',@{$d->{locations}}),"\n"; }
+}
+if ($r->{malformed_sender_rows}) { print "NOTE: malformed senders.dat rows will require review before migration.\n"; $ok=0; }
+my $runuser=system('sh','-c','command -v runuser >/dev/null 2>&1')==0;
+if ($runuser && getpwnam('sendmailanalyzer')) {
+    my $legacy_read=system('runuser','-u','sendmailanalyzer','--','sh','-c','test -r "$1" && test -x "$1"', 'sh', $root)==0;
+    if ($legacy_read && $r->{sample_sender_file}) { $legacy_read=system('runuser','-u','sendmailanalyzer','--','test','-r',$r->{sample_sender_file})==0; }
+    printf "%-30s %s\n",'service-user legacy read',$legacy_read?'OK':'FAIL'; $ok=0 if !$legacy_read;
+    my $dbdir=dirname($db); my $dbwrite=system('runuser','-u','sendmailanalyzer','--','test','-w',$dbdir)==0;
+    printf "%-30s %s (%s)\n",'service-user DB dir write',$dbwrite?'OK':'FAIL',$dbdir; $ok=0 if !$dbwrite;
+} else { printf "%-30s %s\n",'service permission checks','SKIPPED'; }
+printf "%-30s %s (%s)\n",'target DB',(-e $db?'EXISTS':'NOT CREATED'),$db;
+print $ok ? "RESULT: PASS\n" : "RESULT: BLOCKED\n";
+exit($ok?0:1);

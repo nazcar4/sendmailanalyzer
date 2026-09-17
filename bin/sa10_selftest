@@ -1,0 +1,52 @@
+#!/usr/bin/env perl
+use strict; use warnings;
+use FindBin qw($Bin); use lib '/usr/lib/sendmailanalyzer/lib'; use lib "$Bin/../lib";
+use Getopt::Long; use File::Basename qw(dirname); use File::Temp qw(tempfile); use Fcntl ':mode'; use SendmailAnalyzer::Config; use SendmailAnalyzer::Parser; use SendmailAnalyzer::V10;
+my $config='/etc/sendmailanalyzer.conf'; GetOptions('config=s'=>\$config); my $ok=1; my $cfg=SendmailAnalyzer::Config->load($config);
+print "SendmailAnalyzer $SendmailAnalyzer::V10::VERSION self-test\n";
+for my $m (qw(DBI DBD::SQLite IO::Uncompress::Gunzip)) { my $r=eval "require $m; 1"; printf "%-28s %s\n",$m,$r?'OK':'MISSING'; $ok=0 if !$r; }
+my $pl=system('sh','-c','command -v plackup >/dev/null 2>&1')==0; printf "%-28s %s\n",'plackup',$pl?'OK':'MISSING'; $ok=0 if !$pl;
+printf "%-28s %s (%s)\n",'config',(-r $config?'OK':'MISSING'),$config; $ok=0 if !-r $config;
+printf "%-28s %s (%s)\n",'mail log',(-r $cfg->{LOG_FILE}?'OK':'NOT READABLE'),$cfg->{LOG_FILE}; $ok=0 if !-r $cfg->{LOG_FILE};
+if ($cfg->{RSPAMD_LOG_FILE}) { my $exists=-e $cfg->{RSPAMD_LOG_FILE}; printf "%-28s %s (%s)\n",'rspamd log',$exists?(-r $cfg->{RSPAMD_LOG_FILE}?'OK':'NOT READABLE'):'OPTIONAL/MISSING',$cfg->{RSPAMD_LOG_FILE}; $ok=0 if $exists && !-r $cfg->{RSPAMD_LOG_FILE}; }
+my @pw=getpwnam('sendmailanalyzer'); my $user_ok=@pw?1:0; printf "%-28s %s\n",'service user',$user_ok?'OK':'MISSING'; $ok=0 if !$user_ok;
+my $runuser=system('sh','-c','command -v runuser >/dev/null 2>&1')==0;
+if ($user_ok && $runuser) {
+    my $log_ok=system('runuser','-u','sendmailanalyzer','--','test','-r',$cfg->{LOG_FILE})==0;
+    my @lst=stat($cfg->{LOG_FILE}); my $perm=@lst ? sprintf('%04o',S_IMODE($lst[2])) : '????';
+    my $owner=@lst ? (getpwuid($lst[4])||$lst[4]) : '?'; my $group=@lst ? (getgrgid($lst[5])||$lst[5]) : '?';
+    printf "%-28s %s%s\n",'service-user mail read',$log_ok?'OK':'FAIL',$log_ok?'':" ($perm $owner:$group)"; $ok=0 if !$log_ok;
+    if ($cfg->{RSPAMD_LOG_FILE} && -e $cfg->{RSPAMD_LOG_FILE}) { my $rlog_ok=system('runuser','-u','sendmailanalyzer','--','test','-r',$cfg->{RSPAMD_LOG_FILE})==0; printf "%-28s %s\n",'service-user rspamd read',$rlog_ok?'OK':'FAIL'; $ok=0 if !$rlog_ok; }
+    my $dbdir=dirname($cfg->{DB_FILE}); my $dbdir_ok=system('runuser','-u','sendmailanalyzer','--','test','-w',$dbdir)==0;
+    printf "%-28s %s (%s)\n",'service-user DB dir write',$dbdir_ok?'OK':'FAIL',$dbdir; $ok=0 if !$dbdir_ok;
+} else { printf "%-28s %s\n",'service permission checks','SKIPPED'; }
+my $routes=ref($cfg->{HEADER_ROUTES}) eq 'HASH' ? scalar(keys %{$cfg->{HEADER_ROUTES}}) : 0; my $ignored=ref($cfg->{HEADER_IGNORE}) eq 'HASH' ? scalar(keys %{$cfg->{HEADER_IGNORE}}) : 0; printf "%-28s %s (routes=%d ignore=%d)\n",'header routing config','OK',$routes,$ignored;
+my $sample='Sep 14 04:49:55 ns postfix/lmtp[1]: ABC123: to=<user@example.net>, relay=ns[private/dovecot-lmtp], delay=0.1, delays=0/0/0/0, dsn=2.0.0, status=sent (250 Saved)';
+my $e=SendmailAnalyzer::Parser->parse_line($sample,year=>2026,header_routes=>$cfg->{HEADER_ROUTES},header_ignore=>$cfg->{HEADER_IGNORE}); printf "%-28s %s\n",'parser smoke test',$e?'OK':'FAIL'; $ok=0 if !$e;
+my $rsample='2026-09-15 00:58:34 #3503357(rspamd_proxy) <886992>; proxy; rspamd_task_write_log: id: <x\@example.net>, qid: <ABC123>, ip: 127.0.0.1, from: <a\@example.net>, (default: T (no action): [-2.60/16.00] [BAYES_HAM(-3.00){100.00%;}]), len: 100, time: 10.000ms, dns req: 1, digest: <abc>, rcpts: <b\@example.net>, mime_rcpts: <b\@example.net>'; my $re=SendmailAnalyzer::Parser->parse_line($rsample,header_routes=>$cfg->{HEADER_ROUTES},header_ignore=>$cfg->{HEADER_IGNORE}); printf "%-28s %s\n",'rspamd parser smoke',$re?'OK':'FAIL'; $ok=0 if !$re;
+my $sqlite_tmp;
+my $sqlite_smoke=eval {
+    require SendmailAnalyzer::Storage::SQLite;
+    my $tfh; ($tfh,$sqlite_tmp)=tempfile('sa10-selftest-XXXXXX',DIR=>'/tmp',UNLINK=>0); close $tfh; unlink $sqlite_tmp;
+    my $st=SendmailAnalyzer::Storage::SQLite->new(file=>$sqlite_tmp);
+    $st->upsert_message({queue_id=>'SA10SELFTEST',message_id=>'sa10-selftest@example.invalid',first_seen=>'2026-09-16T00:00:00',last_seen=>'2026-09-16T00:00:01',sender=>'a@example.invalid',delivery=>{sent=>1,bounced=>0,deferred=>0},classification=>{spam_detected=>1,spam_rejected=>0,spam_delivered=>1,rspamd_detected=>1},rspamd=>{action=>'no action',score=>-2.5,required_score=>16,forced_action=>'no action test',settings_id=>'SELFTEST',scan_time_ms=>12.5,dns_requests=>2}});
+    my $row=$st->dbh->selectrow_hashref('SELECT rspamd_action,rspamd_required_score,rspamd_settings_id,rspamd_scan_time_ms,rspamd_dns_requests FROM messages WHERE queue_id=?',undef,'SA10SELFTEST');
+    my ($sv)=$st->dbh->selectrow_array("SELECT value FROM meta WHERE key='schema_version'");
+    my $ev={timestamp=>'2000-01-01T00:00:00',host=>'ns',source=>'selftest',type=>'selftest_event',queue_id=>'SA10SELFTEST',raw=>'sa10 sqlite event smoke'};
+    my $ins1=$st->store_event($ev); my $ins2=$st->store_event($ev);
+    my $link1=$st->link_message_id('sa10-alias@example.invalid','SA10SELFTEST','selftest-alias','2000-01-01T00:00:00');
+    my $link2=$st->link_message_id('sa10-alias@example.invalid','SA10SELFTEST','selftest-alias','2000-01-01T00:00:00');
+    my $pruned=$st->prune_raw_events(1);
+    my ($raw_left)=$st->dbh->selectrow_array("SELECT COUNT(*) FROM events WHERE type='selftest_event' AND raw IS NOT NULL");
+    $st->set_legacy_aggregate('2000-01-01','00','smtp_rejected','selftest',2);
+    my ($agg)=$st->dbh->selectrow_array(q{SELECT count FROM legacy_aggregates WHERE day='2000-01-01' AND hour='00' AND metric='smtp_rejected' AND detail='selftest'});
+    my $pass=$row && ($row->{rspamd_action}||'') eq 'no action' && 0+($row->{rspamd_required_score}||0)==16 && ($row->{rspamd_settings_id}||'') eq 'SELFTEST' && 0+($row->{rspamd_dns_requests}||0)==2 && ($sv||'') eq '8' && $ins1==1 && $ins2==0 && $link1>=1 && $link2==0 && $pruned>=1 && 0+($raw_left||0)==0 && 0+($agg||0)==2;
+    undef $st; die 'schema/event/upsert verification failed' if !$pass; 1;
+};
+unlink $sqlite_tmp, "$sqlite_tmp-wal", "$sqlite_tmp-shm" if defined $sqlite_tmp;
+printf "%-28s %s\n",'sqlite v8 runtime smoke',$sqlite_smoke?'OK':'FAIL'; if (!$sqlite_smoke) { my $detail=$@||'verification returned false'; $detail =~ s/[\r\n]+/ /g; print "sqlite v8 runtime detail: $detail\n"; $ok=0; }
+if (-e $cfg->{DB_FILE} && eval { require SendmailAnalyzer::Storage::SQLite; 1 }) {
+    my $dbok=eval { my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$cfg->{DB_FILE},readonly=>1); my ($one)=$s->dbh->selectrow_array('SELECT 1'); $one==1; };
+    printf "%-28s %s\n",'existing DB read-only open',$dbok?'OK':'FAIL'; $ok=0 if !$dbok;
+} else { printf "%-28s %s\n",'existing DB read-only open','SKIPPED (not created yet)'; }
+print $ok?"RESULT: PASS\n":"RESULT: FAIL\n"; exit($ok?0:1);

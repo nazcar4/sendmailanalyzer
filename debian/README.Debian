@@ -1,0 +1,38 @@
+SendmailAnalyzer 10 for Debian
+==============================
+
+SendmailAnalyzer 10.0.16 is packaged for Debian 13. Installing with APT resolves
+the Perl/SQLite/Plack/ACL dependencies, creates the service account, prepares
+least-privilege read access to current and rotated logs, validates SQLite and
+then enables/restarts the v10 collector and web services on a running systemd
+host.
+
+An existing v10 SQLite database is authoritative and is preserved across normal
+package upgrades. Fresh installations initialize an empty v10 SQLite database.
+SendmailAnalyzer 9.4 data is NOT imported or retired automatically by current
+package revisions. Legacy migration helpers remain available only for explicit,
+manual use; see MIGRATION-9.4.md.
+
+Before a v10 upgrade, the package creates rollback material under
+/var/backups/sendmailanalyzer/ and validates the current SQLite database. If the
+post-install validation fails, it attempts to restore the previous database and
+SendmailAnalyzer service state.
+
+Configuration:
+  /etc/sendmailanalyzer.conf
+  /usr/share/doc/sendmailanalyzer/CONFIGURATION.md
+
+Dependencies:
+  /usr/share/doc/sendmailanalyzer/DEPENDENCIES.md
+
+Legacy migration policy:
+  /usr/share/doc/sendmailanalyzer/MIGRATION-9.4.md
+
+The PSGI web service listens on 127.0.0.1:9080 by default and is intended to be
+published through a reverse proxy such as Apache.
+
+Site-local overrides and private header mappings belong in:
+
+  /etc/sendmailanalyzer.d/*.conf
+
+The package does not own or replace files in that directory.

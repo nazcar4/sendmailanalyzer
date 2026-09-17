@@ -1,0 +1,40 @@
+#!/usr/bin/env perl
+use strict; use warnings;
+use FindBin qw($Bin); use lib '/usr/lib/sendmailanalyzer/lib'; use lib "$Bin/../lib";
+use Getopt::Long; use SendmailAnalyzer::Config; use SendmailAnalyzer::Parser; use SendmailAnalyzer::LogReader;
+my (@mail,@rspamd); my ($year,$strict,$samples,$config)=(undef,0,10,'/etc/sendmailanalyzer.conf');
+GetOptions('mail=s@'=>\@mail,'rspamd=s@'=>\@rspamd,'year=i'=>\$year,'strict!'=>\$strict,'samples=i'=>\$samples,'config=s'=>\$config)
+  or die "usage: sa10_rspamd_audit --mail mail.log [--mail mail.log.1] --rspamd rspamd.log [--rspamd old.gz] [--strict]\n";
+die "At least one --mail source required\n" if !@mail; die "At least one --rspamd source required\n" if !@rspamd; my $cfg=SendmailAnalyzer::Config->load($config); my %popt=(header_routes=>$cfg->{HEADER_ROUTES},header_ignore=>$cfg->{HEADER_IGNORE});
+my (%mid,%action,%score); my ($mail_lines,$rsp_lines,$native,$qidless)=(0,0,0,0);
+sub each_line {
+  my ($paths,$cb)=@_; for my $path (@$paths) { die "Missing log $path\n" if !-f $path; my ($fh)=SendmailAnalyzer::LogReader->open_reader($path); while(my $line=<$fh>){$cb->($line,$path)} close $fh; }
+}
+each_line(\@mail,sub {
+  my ($line,$path)=@_; $mail_lines++; my $e=SendmailAnalyzer::Parser->parse_line($line,defined($year)?(year=>$year):(),source_file=>$path,%popt); return if !$e; my $h=$e->as_hash; my $q=$h->{queue_id}||''; return if !$q;
+  $mid{$q}=$h->{message_id} if ($h->{type}||'') eq 'message_id' && defined $h->{message_id};
+  $action{$q}=lc($h->{action}) if ($h->{source}||'') eq 'rspamd' && ($h->{type}||'') eq 'verdict' && ($h->{evidence}||'') =~ /^(?:postfix-header|X-Rspamd-Action)$/ && defined $h->{action};
+  $score{$q}=0+$h->{score} if ($h->{source}||'') eq 'rspamd' && ($h->{type}||'') eq 'score' && ($h->{evidence}||'') =~ /^(?:postfix-header|X-Spamd-Result|X-Rspamd-Score|X-Spam-Status)$/ && defined $h->{score};
+});
+my (%seen_qid,@mismatch,@unmatched); my ($mid_cmp,$mid_bad,$action_cmp,$action_bad,$score_cmp,$score_bad,$matched)=(0,0,0,0,0,0,0);
+each_line(\@rspamd,sub {
+  my ($line,$path)=@_; $rsp_lines++; my $e=SendmailAnalyzer::Parser->parse_line($line,source_file=>$path,%popt); return if !$e; my $h=$e->as_hash;
+  return if ($h->{source}||'') ne 'rspamd' || ($h->{type}||'') ne 'verdict' || ($h->{evidence}||'') ne 'rspamd.log'; $native++;
+  my $q=$h->{queue_id}||''; if (!$q) { $qidless++; return; } $seen_qid{$q}=1;
+  my $has_mail=exists($mid{$q}) || exists($action{$q}) || exists($score{$q}); if (!$has_mail) { push @unmatched,$q if @unmatched<$samples; return; } $matched++;
+  if (defined $h->{message_id} && exists $mid{$q}) { $mid_cmp++; if ($h->{message_id} ne $mid{$q}) { $mid_bad++; push @mismatch,"$q mid native=<$h->{message_id}> mail=<$mid{$q}>" if @mismatch<$samples; } }
+  if (defined $h->{action} && exists $action{$q}) { $action_cmp++; if (lc($h->{action}) ne lc($action{$q})) { $action_bad++; push @mismatch,"$q action native=$h->{action} mail=$action{$q}" if @mismatch<$samples; } }
+  if (defined $h->{score} && exists $score{$q}) { $score_cmp++; if (abs((0+$h->{score})-(0+$score{$q}))>0.001) { $score_bad++; push @mismatch,"$q score native=$h->{score} mail=$score{$q}" if @mismatch<$samples; } }
+});
+my $uq=scalar keys %seen_qid; my $unmatched=$uq-$matched;
+print "SendmailAnalyzer 10 Rspamd/Postfix audit\n";
+print "mail_lines=$mail_lines rspamd_lines=$rsp_lines native_scans=$native qid_scans=$uq qidless_scans=$qidless\n";
+print "matched_queue_ids=$matched unmatched_queue_ids=$unmatched\n";
+print "message_id compared=$mid_cmp mismatches=$mid_bad\n";
+print "action compared=$action_cmp mismatches=$action_bad\n";
+print "score compared=$score_cmp mismatches=$score_bad\n";
+print "unmatched examples: ",join(',',@unmatched),"\n" if @unmatched;
+print "mismatch examples:\n  ",join("\n  ",@mismatch),"\n" if @mismatch;
+my $bad=$mid_bad+$action_bad+$score_bad+($strict?$unmatched:0);
+if ($bad) { print "RESULT: BLOCKED\n"; exit 2; }
+print "RESULT: PASS\n"; exit 0;

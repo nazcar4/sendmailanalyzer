@@ -1,0 +1,37 @@
+# Debian/build artifacts
+*.deb
+*.dsc
+*.build
+*.buildinfo
+*.changes
+*.tar.gz
+*.tar.xz
+debian/.debhelper/
+debian/sendmailanalyzer/
+debian/files
+debian/debhelper-build-stamp
+_build/
+blib/
+MYMETA.*
+Makefile
+pm_to_blib
+
+# Runtime databases/logs/backups
+*.sqlite
+*.sqlite3
+*.db
+*.log
+!examples/blocklist.log
+*.bak
+*.swp
+*~
+
+# Credentials and private key material
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*
+secrets*

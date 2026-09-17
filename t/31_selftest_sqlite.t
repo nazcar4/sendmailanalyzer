@@ -1,0 +1,3 @@
+use strict; use warnings; use Test::More; use FindBin;
+my $f="$FindBin::Bin/../bin/sa10_selftest"; open my $fh,'<',$f or die $!; local $/; my $s=<$fh>; close $fh;
+like($s,qr/sqlite v8 runtime smoke/,'selftest contains sqlite runtime smoke'); like($s,qr/rspamd_required_score/,'smoke exercises persisted fields'); like($s,qr/schema_version/,'smoke checks schema version'); like($s,qr/SA10SELFTEST/,'uses isolated synthetic queue id'); like($s,qr/store_event/,'smoke exercises event insertion and deduplication'); like($s,qr/link_message_id/,'smoke exercises Message-ID alias correlation'); like($s,qr/prune_raw_events/,'smoke exercises retention change count'); like($s,qr/tempfile\('sa10-selftest-/,'uses temporary database'); done_testing;
