@@ -19,6 +19,34 @@ sub pct { my($a,$b)=@_; return '0%' if !$b; return sprintf('%.1f%%',100*$a/$b); 
 sub badge { my($text,$kind)=@_; $kind||='neutral'; return '<span class="badge '.h($kind).'">'.h($text).'</span>'; }
 sub section_head { my($title,$sub)=@_; return '<div class="sectionhead"><div><h2>'.h($title).'</h2>'.($sub?'<p>'.h($sub).'</p>':'').'</div></div>'; }
 sub kpi { my($label,$value,$sub,$kind)=@_; $kind||='blue'; return '<section class="kpi kpi-'.h($kind).'"><div class="kpi-label">'.h($label).'</div><div class="kpi-value">'.h(fmt($value)).'</div><div class="kpi-sub">'.h($sub||'').'</div></section>'; }
+sub human_bytes {
+    my($n)=@_; $n=0+($n||0);
+    my @u=qw(B KiB MiB GiB TiB); my $i=0;
+    while($n>=1024 && $i<$#u){$n/=1024;$i++}
+    return $i ? sprintf('%.1f %s',$n,$u[$i]) : sprintf('%d %s',$n,$u[$i]);
+}
+
+sub age_text {
+    my($s)=@_;
+    return '—' if !defined $s;
+    return $s.'s' if $s<60;
+    return int($s/60).'m' if $s<3600;
+    return int($s/3600).'h '.int(($s%3600)/60).'m' if $s<86400;
+    return int($s/86400).'d '.int(($s%86400)/3600).'h';
+}
+
+sub health_state_badge {
+    my($state)=@_; $state||='unknown';
+    my %kind=(
+        ok=>'good', warning=>'warn', critical=>'bad',
+        active=>'good', idle=>'warn', stale=>'bad',
+        unknown=>'neutral'
+    );
+    my $label=$state;
+    $label=ucfirst($label);
+    return badge($label,$kind{$state}||'neutral');
+}
+
 sub side_link {
     my($prefix,$path,$label,$active,$kind)=@_; $kind||='blue';
     my $on=($active eq $path || ($path ne '/' && index($active,$path.'/')==0))?' active':'';
@@ -33,6 +61,7 @@ sub sidebar_nav {
       side_link($prefix,'/dsn','Notifications / DSN',$active,'teal').
       side_link($prefix,'/rejects','Rejections and errors',$active,'red').
       side_link($prefix,'/status','Status / Flow',$active,'blue').
+      side_link($prefix,'/health','Health',$active,'teal').
       side_link($prefix,'/auth','Authentication',$active,'purple').
       side_link($prefix,'/tls','TLS',$active,'teal').
       side_link($prefix,'/rspamd','Rspamd',$active,'purple').'</div>'.
@@ -164,6 +193,7 @@ my $app=sub{
     return [200,headers('text/css; charset=utf-8'),[$CSS]] if $path eq '/assets/app.css';
     return [204,headers('text/plain'),['']] if $path eq '/favicon.ico';
     if($path eq '/api/stats'){ return json_response(200,st()->stats()); }
+    if($path eq '/api/health'){ my $check=(($p->{check}||'') eq '1')?1:0; return json_response(200,st()->health_status(quick_check=>$check)); }
     if($path eq '/api/messages'){ return json_response(200,st()->recent_messages(q=>substr($p->{q}||'',0,200),limit=>0+($p->{limit}||100))); }
     if($path =~ m{^/api/message/([A-Za-z0-9._-]+)$}){ my $m=st()->message_detail($1); return $m?json_response(200,$m):json_response(404,{error=>'not found'}); }
     if($path eq '/api/series'){ return json_response(200,st()->daily_series(30)); }
@@ -173,6 +203,90 @@ my $app=sub{
     if($path eq '/api/top/recipients'){ return json_response(200,st()->top_recipients(20)); }
     if($path eq '/api/security'){ return json_response(200,{engines=>st()->engine_stats(),rspamd_native=>st()->rspamd_native_stats(),auth=>st()->auth_stats(),tls=>st()->tls_stats(),dsn=>st()->dsn_stats(),viruses=>st()->top_viruses(20),rejects=>st()->top_reject_reasons(20)}); }
     if($path eq '/metrics'){ my $m=st()->stats(); my @k=qw(messages delivered bounced deferred rejected smtp_rejected dnsbl_rejected spam_detected spam_rejected spam_delivered virus_detected dsn_events auth_success auth_failures tls_connections inbound outbound internal relay unknown); my $body="# HELP sendmailanalyzer_messages Mail flow counters from SendmailAnalyzer 10\n# TYPE sendmailanalyzer_messages gauge\n"; $body.="sendmailanalyzer_$_ ".(0+($m->{$_}||0))."\n" for @k; return [200,headers('text/plain; version=0.0.4; charset=utf-8'),[$body]]; }
+
+    if($path eq '/health'){
+        my $check=(($p->{check}||'') eq '1')?1:0;
+        my $h=st()->health_status(quick_check=>$check);
+
+        my $qc=$h->{quick_check}||'unknown';
+        my $qckind=$qc eq 'ok'?'good':$qc eq 'not_run'?'neutral':'bad';
+        my $qclabel=$qc eq 'not_run'?'Not run':$qc;
+        my $checklink='<a href="'.h(u($prefix,'/health?check=1')).'">Run SQLite quick check</a>';
+
+        my @collectors=map {
+            '<tr><td class="sendercell">'.h($_->{source}).'</td>'.
+            '<td>'.health_state_badge($_->{status}).'</td>'.
+            '<td>'.h($_->{updated_at}||'—').'</td>'.
+            '<td>'.h(age_text($_->{age_seconds})).'</td>'.
+            '<td>'.h(fmt($_->{inode})).'</td>'.
+            '<td>'.h(fmt($_->{offset})).'</td></tr>'
+        } @{$h->{collectors}||[]};
+
+        my @sources=map {
+            '<tr><td>'.h($_->{source}).'</td>'.
+            '<td>'.h(fmt($_->{events_24h})).'</td>'.
+            '<td>'.h(fmt($_->{total})).'</td>'.
+            '<td>'.h($_->{last_event}||'—').'</td></tr>'
+        } @{$h->{source_activity}||[]};
+
+        my $r=$h->{recent_24h}||{};
+        my $body=pagehead(
+            'System',
+            'Health',
+            'Read-only collector, database and data-quality diagnostics.'
+        );
+
+        $body.='<section class="panel">'.
+          section_head('Overall status','Current SendmailAnalyzer health summary').
+          '<div class="statlist">'.
+          '<div class="statbox"><div class="n">'.health_state_badge($h->{status}).'</div><div class="t">Overall status</div></div>'.
+          '<div class="statbox"><div class="n">'.h(human_bytes($h->{db_size_bytes})).'</div><div class="t">SQLite database</div></div>'.
+          '<div class="statbox"><div class="n">'.badge($qclabel,$qckind).'</div><div class="t">SQLite quick check · '.$checklink.'</div></div>'.
+          '<div class="statbox"><div class="n">'.h(fmt($h->{stale_collectors})).'</div><div class="t">Stale collectors</div></div>'.
+          '</div>'.
+          '<dl class="kv mt">'.
+          '<dt>Database</dt><dd>'.h($h->{db_file}||'—').'</dd>'.
+          '<dt>Latest message</dt><dd>'.h($h->{last_message}||'—').'</dd>'.
+          '<dt>Latest event</dt><dd>'.h($h->{last_event}||'—').'</dd>'.
+          '</dl></section>';
+
+        $body.='<div class="kpis mt">'.
+          kpi('Messages',$h->{counts}{messages},'stored','blue').
+          kpi('Events',$h->{counts}{events},'normalized','teal').
+          kpi('Recipients',$h->{counts}{recipients},'delivery records','green').
+          kpi('Auth events',$h->{counts}{auth_events},'authentication','purple').
+          kpi('TLS events',$h->{counts}{tls_events},'connections','teal').
+          '</div>';
+
+        $body.='<section class="panel mt">'.
+          section_head('Collector state','Tracked log inputs and last persisted offsets').
+          simple_table(
+              ['Source','Status','Updated','Age','Inode','Offset'],
+              \@collectors
+          ).
+          '</section>';
+
+        $body.='<section class="panel mt">'.
+          section_head('Source activity','Normalized events received during the last 24 hours').
+          simple_table(
+              ['Source','Last 24h','Total','Last event'],
+              \@sources
+          ).
+          '</section>';
+
+        my @quality=(
+            '<tr><td>Messages</td><td>'.h(fmt($r->{messages})).'</td></tr>',
+            '<tr><td>Unclassified</td><td>'.h(fmt($r->{unknown})).'</td></tr>',
+            '<tr><td>Unclassified rate</td><td>'.h(sprintf('%.2f%%',0+($r->{unknown_pct}||0))).'</td></tr>'
+        );
+
+        $body.='<section class="panel mt">'.
+          section_head('Data quality','Classification health during the last 24 hours').
+          simple_table(['Metric','Value'],\@quality).
+          '</section>';
+
+        return html_response(200,layout('Health',$body,$prefix,'/health'));
+    }
 
     if($path eq '/'){
         my $date=valid_date(substr($p->{date}||'',0,10)); my $period_scope=($p->{scope}||'') eq 'month'?'month':'day'; my $hour=substr($p->{hour}||'',0,2); $hour='' if $period_scope eq 'month' || $hour !~ /^(?:[01]\d|2[0-3])$/;

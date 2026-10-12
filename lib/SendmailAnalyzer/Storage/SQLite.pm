@@ -5,6 +5,7 @@ use utf8;
 use JSON::PP qw(encode_json decode_json);
 use Digest::SHA qw(sha1_hex);
 use Scalar::Util qw(blessed);
+use Time::Local qw(timegm timelocal);
 
 sub new {
     my ($class,%opt)=@_;
@@ -504,6 +505,168 @@ sub top_viruses {
     for my $r (@{$self->{dbh}->selectall_arrayref(q{SELECT COALESCE(NULLIF(detail,''),'unknown') virus,SUM(count) count FROM legacy_aggregates WHERE metric='virus_detected' GROUP BY virus},{Slice=>{}})}) { $x{$r->{virus}}+=$r->{count}; }
     my @out=sort {$b->{count}<=>$a->{count}} map {{virus=>$_,count=>$x{$_}}} keys %x; splice(@out,$limit) if @out>$limit; return \@out;
 }
+sub _timestamp_epoch {
+    my ($s)=@_;
+    return if !defined($s) || $s eq '';
+    return if $s !~ /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/;
+
+    my ($year,$mon,$day,$hour,$min,$sec,$zone)=($1,$2,$3,$4,$5,$6,$7);
+    my $epoch;
+
+    if (defined($zone) && $zone ne '') {
+        $epoch=eval { timegm($sec,$min,$hour,$day,$mon-1,$year) };
+        return if !defined($epoch) || $@;
+
+        if ($zone ne 'Z') {
+            my $sign=substr($zone,0,1);
+            my $zh=0+substr($zone,1,2);
+            my $zm=0+substr($zone,-2);
+            my $offset=$zh*3600+$zm*60;
+            $epoch -= $sign eq '+' ? $offset : -$offset;
+        }
+    } else {
+        $epoch=eval { timelocal($sec,$min,$hour,$day,$mon-1,$year) };
+        return if !defined($epoch) || $@;
+    }
+
+    return $epoch;
+}
+
+sub health_status {
+    my ($self,%opt)=@_;
+    my $d=$self->{dbh};
+    my $now=time;
+
+    my @lt=localtime($now-86400);
+    my $since=sprintf(
+        '%04d-%02d-%02dT%02d:%02d:%02d',
+        $lt[5]+1900,$lt[4]+1,$lt[3],$lt[2],$lt[1],$lt[0]
+    );
+
+    my $counts=$d->selectrow_hashref(q{
+        SELECT
+          (SELECT COUNT(*) FROM messages) messages,
+          (SELECT COUNT(*) FROM events) events,
+          (SELECT COUNT(*) FROM recipients) recipients,
+          (SELECT COUNT(*) FROM auth_events) auth_events,
+          (SELECT COUNT(*) FROM tls_events) tls_events
+    }) || {};
+
+    for my $k (qw(messages events recipients auth_events tls_events)) {
+        $counts->{$k}=0+($counts->{$k}||0);
+    }
+
+    my ($last_message)=$d->selectrow_array(
+        q{SELECT MAX(COALESCE(last_seen,first_seen)) FROM messages}
+    );
+    my ($last_event)=$d->selectrow_array(
+        q{SELECT MAX(timestamp) FROM events}
+    );
+
+    my $collectors=$d->selectall_arrayref(
+        q{SELECT source,inode,offset,updated_at FROM collector_state ORDER BY source},
+        {Slice=>{}}
+    );
+
+    my $stale_collectors=0;
+    for my $c (@$collectors) {
+        my $epoch=_timestamp_epoch($c->{updated_at});
+        my $age=defined($epoch) ? $now-$epoch : undef;
+        $age=0 if defined($age) && $age<0;
+
+        $c->{inode}=0+($c->{inode}||0);
+        $c->{offset}=0+($c->{offset}||0);
+        $c->{age_seconds}=defined($age) ? 0+int($age) : undef;
+
+        $c->{status}=
+            !defined($age) ? 'unknown' :
+            $age<=900      ? 'active' :
+            $age<=86400    ? 'idle' :
+                             'stale';
+
+        $stale_collectors++ if $c->{status} eq 'stale';
+    }
+
+    my $sources=$d->selectall_arrayref(q{
+        SELECT
+          source,
+          COUNT(*) total,
+          COALESCE(SUM(
+            CASE
+              WHEN substr(COALESCE(timestamp,''),1,19) >= ? THEN 1
+              ELSE 0
+            END
+          ),0) events_24h,
+          MAX(timestamp) last_event
+        FROM events
+        GROUP BY source
+        ORDER BY source
+    },{Slice=>{}},$since);
+
+    for my $r (@$sources) {
+        $r->{total}=0+($r->{total}||0);
+        $r->{events_24h}=0+($r->{events_24h}||0);
+    }
+
+    my $recent=$d->selectrow_hashref(q{
+        SELECT
+          COUNT(*) messages,
+          COALESCE(SUM(
+            CASE
+              WHEN direction IS NULL OR direction='' OR direction='unknown'
+              THEN 1 ELSE 0
+            END
+          ),0) unknown
+        FROM messages
+        WHERE substr(COALESCE(first_seen,''),1,19) >= ?
+    },undef,$since) || {};
+
+    my $recent_messages=0+($recent->{messages}||0);
+    my $recent_unknown=0+($recent->{unknown}||0);
+    my $unknown_rate=$recent_messages
+        ? (100*$recent_unknown/$recent_messages)
+        : 0;
+
+    my $quick_check='not_run';
+    if ($opt{quick_check}) {
+        my $ok=eval {
+            ($quick_check)=$d->selectrow_array('PRAGMA quick_check(1)');
+            1;
+        };
+        $quick_check='error' if !$ok;
+        $quick_check='unknown' if !defined($quick_check) || $quick_check eq '';
+    }
+
+    my $status='ok';
+    $status='warning'
+        if $stale_collectors
+        || ($recent_messages>=20 && $unknown_rate>=25);
+
+    $status='critical'
+        if $opt{quick_check} && $quick_check ne 'ok';
+
+    my $db_size=(-f $self->{file}) ? (-s $self->{file}) : 0;
+
+    return {
+        status              => $status,
+        generated_at_epoch  => 0+$now,
+        db_file             => $self->{file},
+        db_size_bytes       => 0+($db_size||0),
+        quick_check         => $quick_check,
+        counts              => $counts,
+        last_message        => $last_message,
+        last_event          => $last_event,
+        collectors          => $collectors,
+        stale_collectors    => 0+$stale_collectors,
+        source_activity     => $sources,
+        recent_24h          => {
+            messages        => $recent_messages,
+            unknown         => $recent_unknown,
+            unknown_pct     => 0+sprintf('%.2f',$unknown_rate),
+        },
+    };
+}
+
 sub prune_raw_events {
     my ($self,$days)=@_; return 0 if !$days || $days<1;
     # Retention applies only to the literal log line. Structured event data
