@@ -337,7 +337,52 @@ sub message_detail {
     return if !$m;
     my $internal=$m->{queue_id};
     $m->{recipients}=$self->{dbh}->selectall_arrayref('SELECT recipient,status,dsn,relay,timestamp FROM recipients WHERE queue_id=? ORDER BY id',{Slice=>{}},$internal);
-    my $rows=$self->{dbh}->selectall_arrayref('SELECT timestamp,source,type,data_json,raw FROM events WHERE queue_id=? ORDER BY id',{Slice=>{}},$internal); for (@$rows) { $_->{data}=eval{decode_json($_->{data_json})}||{}; delete $_->{data_json}; } $m->{events}=$rows; return $m;
+    my $rows=$self->{dbh}->selectall_arrayref(
+        q{SELECT id,timestamp,source,type,data_json,raw
+          FROM events
+          WHERE queue_id=?
+          ORDER BY id},
+        {Slice=>{}},
+        $internal
+    );
+
+    for (@$rows) {
+        $_->{data}=eval{decode_json($_->{data_json})}||{};
+        delete $_->{data_json};
+        $_->{_timeline_epoch}=_timestamp_epoch($_->{timestamp});
+    }
+
+    my @ordered=sort {
+        my $ae=$a->{_timeline_epoch};
+        my $be=$b->{_timeline_epoch};
+
+        defined($ae) && defined($be)
+            ? ($ae <=> $be || $a->{id} <=> $b->{id})
+            : defined($ae)
+                ? -1
+                : defined($be)
+                    ? 1
+                    : $a->{id} <=> $b->{id}
+    } @$rows;
+
+    my $previous_epoch;
+    for my $e (@ordered) {
+        my $epoch=delete $e->{_timeline_epoch};
+
+        if (defined($epoch)) {
+            $e->{delta_seconds}=defined($previous_epoch)
+                ? 0+($epoch-$previous_epoch)
+                : undef;
+            $previous_epoch=$epoch;
+        } else {
+            $e->{delta_seconds}=undef;
+        }
+
+        delete $e->{id};
+    }
+
+    $m->{events}=\@ordered;
+    return $m;
 }
 sub daily_series {
     my ($self,$days)=@_; $days||=30;
@@ -508,9 +553,9 @@ sub top_viruses {
 sub _timestamp_epoch {
     my ($s)=@_;
     return if !defined($s) || $s eq '';
-    return if $s !~ /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/;
+    return if $s !~ /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/;
 
-    my ($year,$mon,$day,$hour,$min,$sec,$zone)=($1,$2,$3,$4,$5,$6,$7);
+    my ($year,$mon,$day,$hour,$min,$sec,$fraction,$zone)=($1,$2,$3,$4,$5,$6,$7,$8);
     my $epoch;
 
     if (defined($zone) && $zone ne '') {
@@ -529,6 +574,7 @@ sub _timestamp_epoch {
         return if !defined($epoch) || $@;
     }
 
+    $epoch += 0+$fraction if defined($fraction) && $fraction ne '';
     return $epoch;
 }
 
