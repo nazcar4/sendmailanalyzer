@@ -1,5 +1,18 @@
 # SendmailAnalyzer 10 changelog
 
+## Debian revision 10.0.16-18 — dynamic package version branding
+
+- The web header, sidebar credits and footer now display the exact installed
+  Debian package revision instead of a hard-coded application version.
+- The upstream `VERSION` file remains `10.0.16`; Debian revision information
+  is resolved separately at runtime.
+- The convenience Debian builder now derives its default output filename from
+  `debian/changelog`.
+- Reproducible-build timestamps are derived from the Debian changelog instead
+  of duplicated numeric epochs.
+- Packaging regression tests are revision-independent to prevent stale
+  hard-coded package versions in future releases.
+
 ## Debian revision 10.0.16-17 — diagnostics and network intelligence
 
 - Added a read-only Health dashboard and JSON health diagnostics.

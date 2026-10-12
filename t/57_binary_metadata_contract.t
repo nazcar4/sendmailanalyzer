@@ -6,7 +6,45 @@ like($rules,qr/debian\/copyright.*\/copyright/,'Debian copyright is installed in
 like($rules,qr/changelog\.Debian\.gz/,'Debian changelog is installed');
 my $builder=slurp("$root/scripts/build-deb.sh");
 like($builder,qr/dpkg-gencontrol\s+-psendmailanalyzer/,'convenience builder derives version and dependency metadata from Debian source control');
-like($builder,qr/sendmailanalyzer_10\.0\.16-17_all\.deb/,'convenience builder defaults to current Debian revision output name');
+
+ok(
+    index($builder,'VERSION=$(dpkg-parsechangelog -l "$ROOT/debian/changelog" -SVersion)') >= 0,
+    'convenience builder derives its package version from Debian changelog'
+);
+
+ok(
+    index($builder,'OUT=${1:-"$ROOT/sendmailanalyzer_${VERSION}_all.deb"}') >= 0,
+    'convenience builder derives its default output filename from the package version'
+);
+
+ok(
+    index($builder,'SOURCE_DATE_EPOCH=$(dpkg-parsechangelog -l "$ROOT/debian/changelog" -STimestamp)') >= 0,
+    'convenience builder derives reproducible-build epoch from Debian changelog'
+);
+
+ok(
+    index($rules,'SOURCE_DATE_EPOCH ?= $(shell dpkg-parsechangelog -STimestamp)') >= 0,
+    'canonical Debian build derives reproducible-build epoch from Debian changelog'
+);
+
+unlike(
+    $builder,
+    qr/sendmailanalyzer_10\.0\.16-\d+_all\.deb/,
+    'convenience builder has no hard-coded Debian revision output filename'
+);
+
+unlike(
+    $builder,
+    qr/SOURCE_DATE_EPOCH=\d{9,}/,
+    'convenience builder has no hard-coded reproducible-build epoch'
+);
+
+unlike(
+    $rules,
+    qr/SOURCE_DATE_EPOCH\s*\?=\s*\d{9,}/,
+    'canonical Debian build has no hard-coded reproducible-build epoch'
+);
+
 like($builder,qr/debian\/copyright/,'convenience builder ships copyright credits');
 like(
     $builder,

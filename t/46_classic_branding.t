@@ -1,6 +1,12 @@
 use strict; use warnings; use utf8; use Test::More; use FindBin qw($Bin);
 my $f="$Bin/../web/sendmailanalyzer.psgi"; open my $fh,'<:encoding(UTF-8)',$f or die $!; local $/; my $s=<$fh>;
 like($s,qr/SendmailAnalyzer Report/,'full SendmailAnalyzer text brand is rendered');
+like($s,qr/sub runtime_version/,'web exposes one runtime version resolver');
+like($s,qr/dpkg-query/,'web can derive the installed Debian package version');
+like($s,qr/SENDMAILANALYZER_WEB_VERSION/,'runtime version can be overridden for tests');
+like($s,qr/\.\.\/VERSION/,'source-tree VERSION is retained as fallback');
+unlike($s,qr/<small>v10\.0\.16<\/small>/,'header does not hard-code the application version');
+unlike($s,qr/Powered by SendmailAnalyzer v10\.0\.16 \(GPLv3\)/,'credits do not hard-code the application version');
 unlike($s,qr/class="brand-logo"/,'third-party image logo is not rendered');
 unlike($s,qr{/assets/salogo},'no legacy logo route is exposed');
 unlike($s,qr/sub packaged_logo_file/,'no packaged logo helper remains');

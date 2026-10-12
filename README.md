@@ -17,6 +17,10 @@ rejected the message.
 
 ## Current revision
 
+`10.0.16-18` makes the web interface display the exact installed Debian
+package revision and removes stale version/build-timestamp hard-coding from
+the Debian convenience builder and packaging regression tests.
+
 `10.0.16-17` adds read-only Health diagnostics, chronological message
 timelines, indexed IP activity statistics, and optional offline ASN enrichment
 using a locally configured MaxMind GeoLite2 ASN database.

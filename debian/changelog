@@ -1,3 +1,16 @@
+sendmailanalyzer (10.0.16-18) stable; urgency=medium
+
+  * Display the installed Debian package revision dynamically in the web
+    header, sidebar credits and footer.
+  * Keep VERSION at the upstream application version while exposing the exact
+    packaged revision in the running web interface.
+  * Derive the convenience-package output filename and reproducible build
+    timestamp directly from debian/changelog.
+  * Make Debian source/build contract tests revision-independent so future
+    package revisions cannot leave stale hard-coded version metadata.
+
+ -- Nazcar <nazcar@almogavers.net>  Tue, 13 Oct 2026 01:06:27 +0200
+
 sendmailanalyzer (10.0.16-17) stable; urgency=medium
 
   * Add read-only system health diagnostics and web/API health reporting.

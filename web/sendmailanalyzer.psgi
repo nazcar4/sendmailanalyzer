@@ -3,6 +3,52 @@ use FindBin qw($Bin); use lib "$Bin/../lib";
 use JSON::PP qw(encode_json); use Encode qw(encode_utf8); use URI::Escape qw(uri_unescape uri_escape_utf8);
 use POSIX qw(strftime); use Time::Local qw(timelocal); use SendmailAnalyzer::Config; use SendmailAnalyzer::Storage::SQLite; use SendmailAnalyzer::ASN;
 
+sub runtime_version {
+    if (defined($ENV{SENDMAILANALYZER_WEB_VERSION})
+        && $ENV{SENDMAILANALYZER_WEB_VERSION} ne '') {
+        return $ENV{SENDMAILANALYZER_WEB_VERSION};
+    }
+
+    if (-x '/usr/bin/dpkg-query') {
+        my $version='';
+
+        if (open my $null,'>','/dev/null') {
+            local *STDERR=$null;
+
+            if (open my $fh,'-|',
+                '/usr/bin/dpkg-query',
+                '-W',
+                '-f=${Version}',
+                'sendmailanalyzer') {
+                local $/;
+                $version=<$fh>//'';
+                close $fh;
+            }
+        }
+
+        $version =~ s/^\s+|\s+$//g;
+
+        return $version
+            if $version =~ /^[0-9][0-9A-Za-z.+:~_-]*$/;
+    }
+
+    my $version_file="$Bin/../VERSION";
+
+    if (open my $fh,'<:encoding(UTF-8)',$version_file) {
+        my $version=<$fh>//'';
+        close $fh;
+
+        $version =~ s/^\s+|\s+$//g;
+
+        return $version
+            if $version =~ /^[0-9][0-9A-Za-z.+:~_-]*$/;
+    }
+
+    return '10.0.16';
+}
+
+my $runtime_version=runtime_version();
+
 my $config=$ENV{SENDMAILANALYZER_CONFIG} || '/etc/sendmailanalyzer.conf';
 my $cfg=SendmailAnalyzer::Config->load($config);
 my $storage;
@@ -156,7 +202,7 @@ sub time_console {
 }
 sub layout {
     my($title,$body,$prefix,$active,$period)=@_; $active||='/'; my $now=strftime('%Y-%m-%d %H:%M',localtime); my $nav=sidebar_nav($prefix,$active); $period||={date=>strftime('%Y-%m-%d',localtime),hour=>'',scope=>'day'}; my $console=time_console($prefix,$period->{date},$period->{hour},$period->{scope});
-    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'.h($title).' · SendmailAnalyzer 10</title><link rel="stylesheet" href="'.h(u($prefix,'/assets/app.css')).'"></head><body><header class="topbar"><a class="brand" href="'.h(u($prefix,'/')).'"><span class="brand-copy"><strong>SendmailAnalyzer Report</strong><small>v10.0.16</small></span></a><details class="mobile-menu"><summary>Menu</summary><div class="mobile-menu-body">'.$nav.'</div></details><div class="readonly"><span class="live-dot"></span>real-time report</div></header><div class="app-shell"><aside class="sidebar"><div class="side-scroll">'.$nav.'</div><div class="side-foot"><span class="live-dot"></span>Collector active<br><small>'.h($now).'</small><div class="side-credit">Powered by SendmailAnalyzer v10.0.16 (GPLv3)<br>v10 by Nazcar</div></div></aside><main>'.$console.$body.'<footer class="classic-footer"><div><strong>Powered by SendmailAnalyzer v10.0.16 (GPLv3)</strong><br><span class="project-credit">v10 © 2026 Nazcar · Original SendmailAnalyzer © 2002–2020 Gilles Darold</span></div><span>'.h($now).'</span></footer></main></div></body></html>';
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'.h($title).' · SendmailAnalyzer 10</title><link rel="stylesheet" href="'.h(u($prefix,'/assets/app.css')).'"></head><body><header class="topbar"><a class="brand" href="'.h(u($prefix,'/')).'"><span class="brand-copy"><strong>SendmailAnalyzer Report</strong><small>v'.h($runtime_version).'</small></span></a><details class="mobile-menu"><summary>Menu</summary><div class="mobile-menu-body">'.$nav.'</div></details><div class="readonly"><span class="live-dot"></span>real-time report</div></header><div class="app-shell"><aside class="sidebar"><div class="side-scroll">'.$nav.'</div><div class="side-foot"><span class="live-dot"></span>Collector active<br><small>'.h($now).'</small><div class="side-credit">Powered by SendmailAnalyzer v'.h($runtime_version).' (GPLv3)<br>v10 by Nazcar</div></div></aside><main>'.$console.$body.'<footer class="classic-footer"><div><strong>Powered by SendmailAnalyzer v'.h($runtime_version).' (GPLv3)</strong><br><span class="project-credit">v10 © 2026 Nazcar · Original SendmailAnalyzer © 2002–2020 Gilles Darold</span></div><span>'.h($now).'</span></footer></main></div></body></html>';
 }
 sub mini_bar { my($value,$max,$kind)=@_; $max||=1; my $w=$max?int(100*$value/$max):0; $w=100 if $w>100; $w=0 if $w<0; return '<svg class="minibar" viewBox="0 0 100 8" preserveAspectRatio="none"><rect class="track" x="0" y="1" width="100" height="6" rx="3"></rect><rect class="fill fill-'.h($kind||'blue').'" x="0" y="1" width="'.$w.'" height="6" rx="3"></rect></svg>'; }
 sub top_table { my($rows,$field,$countfield,$extra,$kind)=@_; return '<div class="empty">No data.</div>' if !@$rows; my $max=$rows->[0]{$countfield}||1; my $o='<div class="ranking">'; my $i=1; for my $r(@$rows){ my $meta=$extra?$extra->($r):''; $o.='<div class="rankrow"><span class="rankno">'.$i.'</span><div class="rankbody"><div class="rankline"><span class="rankname" title="'.h($r->{$field}).'">'.h($r->{$field}).'</span><strong>'.h(fmt($r->{$countfield})).'</strong></div>'.mini_bar($r->{$countfield},$max,$kind).($meta?'<div class="rankmeta">'.h($meta).'</div>':'').'</div></div>'; $i++; } return $o.'</div>'; }

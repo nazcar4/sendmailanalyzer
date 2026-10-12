@@ -3,7 +3,9 @@
 # For the canonical Debian source build use: dpkg-buildpackage -us -uc -b
 main() {
     ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || return 1
-    OUT=${1:-"$ROOT/sendmailanalyzer_10.0.16-17_all.deb"}
+    VERSION=$(dpkg-parsechangelog -l "$ROOT/debian/changelog" -SVersion) || return 1
+    SOURCE_DATE_EPOCH=$(dpkg-parsechangelog -l "$ROOT/debian/changelog" -STimestamp) || return 1
+    OUT=${1:-"$ROOT/sendmailanalyzer_${VERSION}_all.deb"}
     TMP=$(mktemp -d) || return 1
     trap 'rm -rf "$TMP"' HUP INT TERM
     PKG="$TMP/pkg"
@@ -47,8 +49,8 @@ main() {
     find "$PKG/usr/lib/sendmailanalyzer/lib" -type f -exec chmod 0644 {} +
     chmod 0644 "$PKG"/lib/systemd/system/*.service "$PKG/etc/sendmailanalyzer.conf" "$PKG/usr/lib/tmpfiles.d/sendmailanalyzer-rspamd.conf"
     (cd "$PKG" && find usr lib etc -type f -print0 | sort -z | xargs -0 md5sum > DEBIAN/md5sums) || return 1
-    find "$PKG" -print0 | xargs -0 touch -h -d '@1791843715' || return 1
-    SOURCE_DATE_EPOCH=1791843715 dpkg-deb --build --root-owner-group "$PKG" "$OUT" || return 1
+    find "$PKG" -print0 | xargs -0 touch -h -d "@$SOURCE_DATE_EPOCH" || return 1
+    SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" dpkg-deb --build --root-owner-group "$PKG" "$OUT" || return 1
     rm -rf "$TMP"
     trap - HUP INT TERM
     return 0
