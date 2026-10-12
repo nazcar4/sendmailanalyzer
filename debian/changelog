@@ -1,3 +1,19 @@
+sendmailanalyzer (10.0.16-17) stable; urgency=medium
+
+  * Add read-only system health diagnostics and web/API health reporting.
+  * Add chronological per-message timelines with inter-event durations.
+  * Add indexed IP activity statistics across SMTP, authentication and TLS
+    data, including JSON API and web dashboard integration.
+  * Upgrade the SQLite schema to v9 with dedicated client/authentication/TLS
+    IP indexes while preserving existing data during upgrades.
+  * Add optional offline ASN enrichment using a local MaxMind GeoLite2 ASN
+    database, with soft-fail behavior and no external network lookups.
+  * Declare the MaxMind Perl reader as an optional Debian Suggests dependency.
+  * Preserve the established safe upgrade, rollback and public-release hygiene
+    policies from 10.0.16-16.
+
+ -- Nazcar <nazcar@almogavers.net>  Tue, 13 Oct 2026 00:21:55 +0200
+
 sendmailanalyzer (10.0.16-16) stable; urgency=medium
 
   * Replace remaining production-derived fixture identifiers with synthetic

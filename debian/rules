@@ -26,11 +26,22 @@ binary-indep: build
 	install -d $(PKGDIR)/lib/systemd/system $(PKGDIR)/usr/lib/tmpfiles.d
 	install -d $(PKGDIR)/usr/share/doc/$(PACKAGE) $(PKGDIR)/usr/share/$(PACKAGE)/examples $(PKGDIR)/usr/share/$(PACKAGE)/defaults
 	cp -a lib web bin $(PKGDIR)/usr/lib/sendmailanalyzer/
-	@for b in bin/*; do ln -s ../lib/sendmailanalyzer/bin/$$(basename $$b) $(PKGDIR)/usr/bin/$$(basename $$b); done
+	@for b in bin/*; do \
+		[ -f "$$b" ] && [ -x "$$b" ] || continue; \
+		ln -s ../lib/sendmailanalyzer/bin/$$(basename $$b) $(PKGDIR)/usr/bin/$$(basename $$b); \
+	done
 	install -m 0644 config/sendmailanalyzer.conf $(PKGDIR)/etc/sendmailanalyzer.conf
 	install -m 0644 config/sendmailanalyzer-rspamd.tmpfiles $(PKGDIR)/usr/lib/tmpfiles.d/sendmailanalyzer-rspamd.conf
 	install -m 0644 systemd/*.service $(PKGDIR)/lib/systemd/system/
-	install -m 0644 README.md CHANGELOG-v10.md NOTICE LICENSE docs/*.md config/apache2-sendmailanalyzer.conf debian/README.Debian $(PKGDIR)/usr/share/doc/$(PACKAGE)/
+	install -m 0644 README.md CHANGELOG-v10.md NOTICE LICENSE config/apache2-sendmailanalyzer.conf debian/README.Debian $(PKGDIR)/usr/share/doc/$(PACKAGE)/
+	@for doc in docs/*.md; do \
+		base=$$(basename $$doc); \
+		if [ "$$base" = "README.md" ]; then \
+			install -m 0644 $$doc $(PKGDIR)/usr/share/doc/$(PACKAGE)/README.DOCS.md; \
+		else \
+			install -m 0644 $$doc $(PKGDIR)/usr/share/doc/$(PACKAGE)/$$base; \
+		fi; \
+	done
 	install -m 0644 debian/copyright $(PKGDIR)/usr/share/doc/$(PACKAGE)/copyright
 	gzip -n -9 -c debian/changelog > $(PKGDIR)/usr/share/doc/$(PACKAGE)/changelog.Debian.gz
 	cp -a examples/. $(PKGDIR)/usr/share/$(PACKAGE)/examples/
@@ -39,7 +50,11 @@ binary-indep: build
 	install -m 0755 debian/preinst debian/postinst debian/prerm debian/postrm $(PKGDIR)/DEBIAN/
 	install -m 0644 debian/conffiles $(PKGDIR)/DEBIAN/conffiles
 	find $(PKGDIR) -type d -exec chmod 0755 {} +
-	find $(PKGDIR)/usr/lib/sendmailanalyzer/bin -type f -exec chmod 0755 {} +
+	find $(PKGDIR)/usr/lib/sendmailanalyzer/bin -type f -exec chmod 0644 {} +
+	@for b in bin/*; do \
+		[ -f "$$b" ] && [ -x "$$b" ] || continue; \
+		chmod 0755 $(PKGDIR)/usr/lib/sendmailanalyzer/bin/$$(basename $$b); \
+	done
 	find $(PKGDIR)/usr/lib/sendmailanalyzer/lib -type f -exec chmod 0644 {} +
 	chmod 0644 $(PKGDIR)/lib/systemd/system/*.service $(PKGDIR)/etc/sendmailanalyzer.conf $(PKGDIR)/usr/lib/tmpfiles.d/sendmailanalyzer-rspamd.conf
 	cd $(PKGDIR) && find usr lib etc -type f -print0 | sort -z | xargs -0 md5sum > DEBIAN/md5sums

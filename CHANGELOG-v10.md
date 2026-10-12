@@ -1,5 +1,22 @@
 # SendmailAnalyzer 10 changelog
 
+## Debian revision 10.0.16-17 — diagnostics and network intelligence
+
+- Added a read-only Health dashboard and JSON health diagnostics.
+- Added chronological per-message timelines with stable ordering and durations.
+- Added IP activity statistics combining SMTP messages, authentication events
+  and TLS connections.
+- Added SQLite schema v9 indexes for message client IPs, authentication client
+  IPs and TLS peer IPs, including tested v8-to-v9 migration.
+- Added `/ips` and `/api/top/ips` network activity views.
+- Added optional ASN enrichment using a local MaxMind GeoLite2 ASN database.
+- ASN enrichment is soft-fail and performs no Whois, HTTP or external API
+  lookups.
+- The MaxMind Perl reader is suggested rather than required, so installations
+  without ASN support continue to operate normally.
+- Preserved public-release hygiene, reverse-proxy support and the established
+  safe Debian upgrade/rollback policy.
+
 ## Debian revision 10.0.16-16 — publication hygiene
 
 - Replace the remaining production-derived Queue-IDs, Message-IDs, process IDs,

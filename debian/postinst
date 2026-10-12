@@ -222,7 +222,7 @@ main() {
     if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
     rm -f "$BACKUP_ROOT/.active-preinst-backup"
 
-    printf '%s\n' 'SendmailAnalyzer 10.0.16-16 production upgrade configured successfully.'
+    printf '%s\n' 'SendmailAnalyzer 10.0.16-17 production upgrade configured successfully.'
     printf '%s\n' 'Configuration: /etc/sendmailanalyzer.conf'
     printf '%s\n' 'Configuration help: /usr/share/doc/sendmailanalyzer/CONFIGURATION.md'
     return 0

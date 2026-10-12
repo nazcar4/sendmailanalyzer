@@ -17,6 +17,10 @@ rejected the message.
 
 ## Current revision
 
+`10.0.16-17` adds read-only Health diagnostics, chronological message
+timelines, indexed IP activity statistics, and optional offline ASN enrichment
+using a locally configured MaxMind GeoLite2 ASN database.
+
 `10.0.16-16` is the publication-hygiene revision built on the validated
 `10.0.16-15` production baseline. It keeps the same parser, collector, SQLite,
 Apache and site-local configuration behavior while replacing the remaining

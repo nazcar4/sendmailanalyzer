@@ -7,7 +7,7 @@ open my $cf,'<:encoding(UTF-8)',"$root/debian/control" or die $!; local $/; my $
 like($c,qr/^Source: sendmailanalyzer$/m,'Debian source name is correct');
 like($c,qr/^Package: sendmailanalyzer$/m,'Debian binary package name is correct');
 open my $ch,'<:encoding(UTF-8)',"$root/debian/changelog" or die $!; local $/; my $cl=<$ch>;
-like($cl,qr/^sendmailanalyzer \(10\.0\.16-16\)/,'Debian changelog has final package revision');
+like($cl,qr/^sendmailanalyzer \(10\.0\.16-17\)/,'Debian changelog has current package revision');
 open my $sf,'<',"$root/debian/source/format" or die $!; my $fmt=<$sf>; $fmt =~ s/\s+\z//; is($fmt,'3.0 (native)','native source format is declared');
 ok(-x "$root/debian/rules",'debian/rules is executable');
 ok(-f "$root/config/sendmailanalyzer-rspamd.tmpfiles",'vendor tmpfiles ACL rule exists');
