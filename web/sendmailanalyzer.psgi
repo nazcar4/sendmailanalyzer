@@ -1,12 +1,39 @@
 use strict; use warnings; use utf8;
 use FindBin qw($Bin); use lib "$Bin/../lib";
 use JSON::PP qw(encode_json); use Encode qw(encode_utf8); use URI::Escape qw(uri_unescape uri_escape_utf8);
-use POSIX qw(strftime); use Time::Local qw(timelocal); use SendmailAnalyzer::Config; use SendmailAnalyzer::Storage::SQLite;
+use POSIX qw(strftime); use Time::Local qw(timelocal); use SendmailAnalyzer::Config; use SendmailAnalyzer::Storage::SQLite; use SendmailAnalyzer::ASN;
 
 my $config=$ENV{SENDMAILANALYZER_CONFIG} || '/etc/sendmailanalyzer.conf';
 my $cfg=SendmailAnalyzer::Config->load($config);
 my $storage;
 sub st { $storage ||= SendmailAnalyzer::Storage::SQLite->new(file=>$cfg->{DB_FILE},readonly=>1) }
+
+my $asn;
+sub asn {
+    $asn ||= SendmailAnalyzer::ASN->new(
+        db_file=>($cfg->{ASN_DB_FILE}||'')
+    );
+}
+
+sub enrich_ip_rows_asn {
+    my ($rows)=@_;
+
+    for my $row (@$rows) {
+        my $info=asn()->lookup($row->{ip});
+
+        $row->{asn}=
+            $info && defined($info->{asn})
+            ? 0+$info->{asn}
+            : undef;
+
+        $row->{asn_organization}=
+            $info && defined($info->{organization})
+            ? $info->{organization}
+            : undef;
+    }
+
+    return $rows;
+}
 sub h { my $s=defined $_[0]?"$_[0]":''; $s =~ s/&/&amp;/g; $s =~ s/</&lt;/g; $s =~ s/>/&gt;/g; $s =~ s/"/&quot;/g; $s =~ s/'/&#39;/g; return $s; }
 sub params { my ($env)=@_; my %p; for(split /&/,$env->{QUERY_STRING}||''){ my($k,$v)=split /=/,$_,2; $k||=''; $v||=''; $k =~ tr/+/ /; $v =~ tr/+/ /; $k=uri_unescape($k); $v=uri_unescape($v); $p{$k}=$v if length $k; } return \%p; }
 sub headers { my ($type)=@_; return ['Content-Type'=>$type,'X-Content-Type-Options'=>'nosniff','X-Frame-Options'=>'SAMEORIGIN','Referrer-Policy'=>'no-referrer','Permissions-Policy'=>'camera=(), microphone=(), geolocation=()','Content-Security-Policy'=>"default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; frame-ancestors 'self'; base-uri 'none'; form-action 'self'",'Cache-Control'=>'no-store']; }
@@ -306,7 +333,9 @@ my $app=sub{
         my $limit=0+($p->{limit}||100);
         my $from=substr($p->{from}||'',0,40);
         my $to=substr($p->{to}||'',0,40);
-        return json_response(200,st()->top_ips($limit,$from,$to));
+        my $rows=st()->top_ips($limit,$from,$to);
+        enrich_ip_rows_asn($rows);
+        return json_response(200,$rows);
     }
     if($path eq '/api/security'){ return json_response(200,{engines=>st()->engine_stats(),rspamd_native=>st()->rspamd_native_stats(),auth=>st()->auth_stats(),tls=>st()->tls_stats(),dsn=>st()->dsn_stats(),viruses=>st()->top_viruses(20),rejects=>st()->top_reject_reasons(20)}); }
     if($path eq '/metrics'){ my $m=st()->stats(); my @k=qw(messages delivered bounced deferred rejected smtp_rejected dnsbl_rejected spam_detected spam_rejected spam_delivered virus_detected dsn_events auth_success auth_failures tls_connections inbound outbound internal relay unknown); my $body="# HELP sendmailanalyzer_messages Mail flow counters from SendmailAnalyzer 10\n# TYPE sendmailanalyzer_messages gauge\n"; $body.="sendmailanalyzer_$_ ".(0+($m->{$_}||0))."\n" for @k; return [200,headers('text/plain; version=0.0.4; charset=utf-8'),[$body]]; }
@@ -429,10 +458,13 @@ my $app=sub{
     }
     if($path eq '/ips'){
         my $rows=st()->top_ips(100);
+        enrich_ip_rows_asn($rows);
 
         my @tr=map {
             '<tr>'.
             '<td><span class="qid">'.h($_->{ip}).'</span></td>'.
+            '<td>'.(defined($_->{asn}) ? 'AS'.h($_->{asn}) : '—').'</td>'.
+            '<td>'.h($_->{asn_organization}||'—').'</td>'.
             '<td>'.fmt($_->{activity}).'</td>'.
             '<td>'.fmt($_->{messages}).'</td>'.
             '<td>'.fmt($_->{inbound}).'</td>'.
@@ -463,6 +495,8 @@ my $app=sub{
             simple_table(
                 [
                     'IP',
+                    'ASN',
+                    'Organization',
                     'Activity',
                     'Messages',
                     'Inbound',

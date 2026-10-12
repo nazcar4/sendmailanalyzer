@@ -21,6 +21,7 @@ change, restart `sendmailanalyzer-collector.service`. If only `BIND_HOST` or
 | `LOG_FILE` | Primary mail log followed in real time. | `/var/log/mail.log` |
 | `RSPAMD_LOG_FILE` | Native Rspamd log used for actions, scores, symbols and metadata. | `/var/log/rspamd/rspamd.log` |
 | `DB_FILE` | Persistent v10 SQLite database. | `/var/lib/sendmailanalyzer/sendmailanalyzer.sqlite3` |
+| `ASN_DB_FILE` | Optional local MaxMind GeoLite2 ASN database used to enrich IP statistics. | empty |
 | `STATE_FILE` | Compatibility placeholder; current offsets are stored in SQLite. | Leave unchanged |
 | `LEGACY_DATA_DIR` | 9.4 flat data used only by explicit/manual migration tools. | `/usr/local/sendmailanalyzer/data` |
 | `LOCAL_DOMAINS` | Comma-separated local domains used for traffic direction. | `example.org,mail.example.org` |
@@ -30,6 +31,31 @@ change, restart `sendmailanalyzer-collector.service`. If only `BIND_HOST` or
 | `RAW_RETENTION_DAYS` | Raw log retention in days. Structured data is never removed by this setting. `0` disables pruning. | `31` |
 | `WEB_PAGE_SIZE` | Default number of rows in web listings. | `100` |
 | `MEMORY_MESSAGE_LIMIT` | Approximate classifier message-cache limit. | `10000` |
+
+## Optional ASN enrichment
+
+`ASN_DB_FILE` enables ASN enrichment on IP statistics. It is optional and
+disabled by default.
+
+A typical site-local configuration is:
+
+    ASN_DB_FILE /usr/share/GeoIP/GeoLite2-ASN.mmdb
+
+The configured file must be a readable MaxMind-compatible ASN `.mmdb` database.
+
+When enabled, SendmailAnalyzer reads the database locally and can display the
+autonomous system number and organization associated with an IP address.
+
+ASN support is soft-fail: if the path is not configured, the database is
+missing or unreadable, the database cannot be opened, or the MaxMind Perl
+reader is unavailable, normal statistics and the web interface continue to
+operate without ASN enrichment.
+
+No Whois query, HTTP request, external API call or other network lookup is
+performed for ASN enrichment.
+
+Deployment-specific database paths should normally be placed in
+`/etc/sendmailanalyzer.d/*.conf`.
 
 ## Log permissions
 

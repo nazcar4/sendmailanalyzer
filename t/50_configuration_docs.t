@@ -5,9 +5,14 @@ for my $k (qw(LOG_FILE RSPAMD_LOG_FILE DB_FILE STATE_FILE LEGACY_DATA_DIR LOCAL_
     like($s,qr/^\Q$k\E\s+/m,"$k has a configured value");
 }
 like($s,qr/^# HOSTNAME\n/m,'HOSTNAME optional parameter is documented');
+like($s,qr/^# ASN_DB_FILE\n/m,'ASN_DB_FILE optional parameter is documented');
+unlike($s,qr/^ASN_DB_FILE\s+\S+/m,'ASN enrichment is disabled by default');
 ok(-f "$Bin/../docs/CONFIGURATION.md",'full configuration guide exists');
 open my $df,'<:encoding(UTF-8)',"$Bin/../docs/CONFIGURATION.md" or die $!; local $/; my $d=<$df>;
 like($d,qr/LOCAL_DOMAINS/,'guide explains local domains');
 like($d,qr/RAW_RETENTION_DAYS/,'guide explains raw retention');
+like($d,qr/ASN_DB_FILE/,'guide explains optional ASN database');
+like($d,qr/MaxMind/i,'guide explains MaxMind ASN enrichment');
+like($d,qr/No Whois query|no network lookup/i,'guide documents offline ASN lookup');
 like($d,qr/reverse proxy/i,'guide explains reverse proxy');
 done_testing;

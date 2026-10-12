@@ -7,6 +7,7 @@ sub defaults {
         LOG_FILE        => '/var/log/mail.log',
         RSPAMD_LOG_FILE => '/var/log/rspamd/rspamd.log',
         DB_FILE         => '/var/lib/sendmailanalyzer/sendmailanalyzer.sqlite3',
+        ASN_DB_FILE     => '',
         STATE_FILE      => '/var/lib/sendmailanalyzer/collector.state',
         LOCAL_DOMAINS   => ['localhost'],
         BIND_HOST       => '127.0.0.1',

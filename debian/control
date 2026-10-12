@@ -12,6 +12,7 @@ Depends: perl, passwd, acl, util-linux, systemd, tar, gzip, libdbi-perl, libdbd-
 Conflicts: sendmailanalyzer10
 Replaces: sendmailanalyzer10
 Recommends: apache2, rsyslog
+Suggests: libmaxmind-db-reader-perl
 Description: modern Postfix-first mail log analyzer and web dashboard
  SendmailAnalyzer 10 correlates Postfix, Postscreen, SpamAssassin, native
  Rspamd file logs, OpenDKIM, OpenDMARC, ClamAV and Dovecot events into SQLite.

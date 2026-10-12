@@ -29,6 +29,28 @@ manual CPAN installation is required.
 application can run without exposing the web interface through Apache and does
 not impose a replacement logging policy.
 
+## Optional ASN enrichment
+
+ASN enrichment for IP statistics is optional.
+
+When `ASN_DB_FILE` points to a local MaxMind GeoLite2 ASN database,
+SendmailAnalyzer can display the autonomous system number and organization for
+IP addresses.
+
+The optional Perl reader is available on Debian as
+`libmaxmind-db-reader-perl`.
+
+The Debian package declares this module as `Suggests`, not as a mandatory
+runtime dependency. SendmailAnalyzer continues to work normally when the module
+or ASN database is absent.
+
+The ASN database itself is not bundled with SendmailAnalyzer. The administrator
+must provide a compatible local `.mmdb` database and configure its path with
+`ASN_DB_FILE`.
+
+ASN lookups are entirely local. SendmailAnalyzer performs no Whois query, HTTP
+request, external API call or other network lookup for ASN enrichment.
+
 ## Build dependencies
 
 The source tree contains complete `debian/` metadata. Install the
