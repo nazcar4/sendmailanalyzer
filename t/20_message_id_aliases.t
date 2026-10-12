@@ -20,6 +20,6 @@ is($rq,$qid,'spamd aka alias resolves through classifier');
 is($s->resolve_message_id($orig),$qid,'original Message-ID persisted as evidence alias');
 
 my ($schema)=$s->dbh->selectrow_array("SELECT value FROM meta WHERE key='schema_version'");
-is($schema,'8','schema v8');
+is($schema,'9','schema v9');
 unlink $db; unlink "$db-wal"; unlink "$db-shm";
 done_testing;

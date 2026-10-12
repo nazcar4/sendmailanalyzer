@@ -32,6 +32,12 @@ my $sqlite_smoke=eval {
     $st->upsert_message({queue_id=>'SA10SELFTEST',message_id=>'sa10-selftest@example.invalid',first_seen=>'2026-09-16T00:00:00',last_seen=>'2026-09-16T00:00:01',sender=>'a@example.invalid',delivery=>{sent=>1,bounced=>0,deferred=>0},classification=>{spam_detected=>1,spam_rejected=>0,spam_delivered=>1,rspamd_detected=>1},rspamd=>{action=>'no action',score=>-2.5,required_score=>16,forced_action=>'no action test',settings_id=>'SELFTEST',scan_time_ms=>12.5,dns_requests=>2}});
     my $row=$st->dbh->selectrow_hashref('SELECT rspamd_action,rspamd_required_score,rspamd_settings_id,rspamd_scan_time_ms,rspamd_dns_requests FROM messages WHERE queue_id=?',undef,'SA10SELFTEST');
     my ($sv)=$st->dbh->selectrow_array("SELECT value FROM meta WHERE key='schema_version'");
+    my $idx_rows=$st->dbh->selectall_arrayref(q{
+        SELECT name FROM sqlite_master
+        WHERE type='index'
+          AND name IN ('idx_messages_client_ip','idx_auth_client_ip','idx_tls_peer_ip')
+    },{Slice=>{}});
+    my %ip_idx=map { $_->{name}=>1 } @$idx_rows;
     my $ev={timestamp=>'2000-01-01T00:00:00',host=>'ns',source=>'selftest',type=>'selftest_event',queue_id=>'SA10SELFTEST',raw=>'sa10 sqlite event smoke'};
     my $ins1=$st->store_event($ev); my $ins2=$st->store_event($ev);
     my $link1=$st->link_message_id('sa10-alias@example.invalid','SA10SELFTEST','selftest-alias','2000-01-01T00:00:00');
@@ -40,11 +46,11 @@ my $sqlite_smoke=eval {
     my ($raw_left)=$st->dbh->selectrow_array("SELECT COUNT(*) FROM events WHERE type='selftest_event' AND raw IS NOT NULL");
     $st->set_legacy_aggregate('2000-01-01','00','smtp_rejected','selftest',2);
     my ($agg)=$st->dbh->selectrow_array(q{SELECT count FROM legacy_aggregates WHERE day='2000-01-01' AND hour='00' AND metric='smtp_rejected' AND detail='selftest'});
-    my $pass=$row && ($row->{rspamd_action}||'') eq 'no action' && 0+($row->{rspamd_required_score}||0)==16 && ($row->{rspamd_settings_id}||'') eq 'SELFTEST' && 0+($row->{rspamd_dns_requests}||0)==2 && ($sv||'') eq '8' && $ins1==1 && $ins2==0 && $link1>=1 && $link2==0 && $pruned>=1 && 0+($raw_left||0)==0 && 0+($agg||0)==2;
+    my $pass=$row && ($row->{rspamd_action}||'') eq 'no action' && 0+($row->{rspamd_required_score}||0)==16 && ($row->{rspamd_settings_id}||'') eq 'SELFTEST' && 0+($row->{rspamd_dns_requests}||0)==2 && ($sv||'') eq '9' && $ip_idx{idx_messages_client_ip} && $ip_idx{idx_auth_client_ip} && $ip_idx{idx_tls_peer_ip} && $ins1==1 && $ins2==0 && $link1>=1 && $link2==0 && $pruned>=1 && 0+($raw_left||0)==0 && 0+($agg||0)==2;
     undef $st; die 'schema/event/upsert verification failed' if !$pass; 1;
 };
 unlink $sqlite_tmp, "$sqlite_tmp-wal", "$sqlite_tmp-shm" if defined $sqlite_tmp;
-printf "%-28s %s\n",'sqlite v8 runtime smoke',$sqlite_smoke?'OK':'FAIL'; if (!$sqlite_smoke) { my $detail=$@||'verification returned false'; $detail =~ s/[\r\n]+/ /g; print "sqlite v8 runtime detail: $detail\n"; $ok=0; }
+printf "%-28s %s\n",'sqlite v9 runtime smoke',$sqlite_smoke?'OK':'FAIL'; if (!$sqlite_smoke) { my $detail=$@||'verification returned false'; $detail =~ s/[\r\n]+/ /g; print "sqlite v9 runtime detail: $detail\n"; $ok=0; }
 if (-e $cfg->{DB_FILE} && eval { require SendmailAnalyzer::Storage::SQLite; 1 }) {
     my $dbok=eval { my $s=SendmailAnalyzer::Storage::SQLite->new(file=>$cfg->{DB_FILE},readonly=>1); my ($one)=$s->dbh->selectrow_array('SELECT 1'); $one==1; };
     printf "%-28s %s\n",'existing DB read-only open',$dbok?'OK':'FAIL'; $ok=0 if !$dbok;

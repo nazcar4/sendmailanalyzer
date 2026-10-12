@@ -21,5 +21,5 @@ for my $rel (qw(lib/SendmailAnalyzer/Storage/SQLite.pm lib/SendmailAnalyzer/Clas
 }
 
 open my $sf,'<',"$Bin/../bin/sa10_selftest" or die $!; local $/; my $st=<$sf>; close $sf;
-like($st,qr/sqlite v8 runtime detail:/,'selftest reports SQLite smoke exception detail');
+like($st,qr/sqlite v9 runtime detail:/,'selftest reports SQLite smoke exception detail');
 done_testing;

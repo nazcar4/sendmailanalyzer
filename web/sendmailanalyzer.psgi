@@ -68,6 +68,7 @@ sub sidebar_nav {
       '<div class="classic-nav-group"><div class="classic-nav-title">TOP STATISTICS</div>'.
       side_link($prefix,'/senders','Senders',$active,'blue').
       side_link($prefix,'/recipients','Recipients',$active,'purple').
+      side_link($prefix,'/ips','IPs',$active,'teal').
       side_link($prefix,'/spam','Spam',$active,'amber').
       side_link($prefix,'/viruses','Virus',$active,'red').
       side_link($prefix,'/rejects','Rejections',$active,'red').'</div>'.
@@ -301,6 +302,12 @@ my $app=sub{
     if($path eq '/api/series/monthly'){ return json_response(200,st()->monthly_series(12)); }
     if($path eq '/api/top/senders'){ return json_response(200,st()->top_senders(20)); }
     if($path eq '/api/top/recipients'){ return json_response(200,st()->top_recipients(20)); }
+    if($path eq '/api/top/ips'){
+        my $limit=0+($p->{limit}||100);
+        my $from=substr($p->{from}||'',0,40);
+        my $to=substr($p->{to}||'',0,40);
+        return json_response(200,st()->top_ips($limit,$from,$to));
+    }
     if($path eq '/api/security'){ return json_response(200,{engines=>st()->engine_stats(),rspamd_native=>st()->rspamd_native_stats(),auth=>st()->auth_stats(),tls=>st()->tls_stats(),dsn=>st()->dsn_stats(),viruses=>st()->top_viruses(20),rejects=>st()->top_reject_reasons(20)}); }
     if($path eq '/metrics'){ my $m=st()->stats(); my @k=qw(messages delivered bounced deferred rejected smtp_rejected dnsbl_rejected spam_detected spam_rejected spam_delivered virus_detected dsn_events auth_success auth_failures tls_connections inbound outbound internal relay unknown); my $body="# HELP sendmailanalyzer_messages Mail flow counters from SendmailAnalyzer 10\n# TYPE sendmailanalyzer_messages gauge\n"; $body.="sendmailanalyzer_$_ ".(0+($m->{$_}||0))."\n" for @k; return [200,headers('text/plain; version=0.0.4; charset=utf-8'),[$body]]; }
 
@@ -420,6 +427,66 @@ my $app=sub{
     if($path =~ m{^/direction/(inbound|outbound|internal|relay|unknown)$}){
         my $dir=$1; my %name=(inbound=>'Inbound',outbound=>'Outbound',internal=>'Internal',relay=>'Relay',unknown=>'Unclassified'); my $rows=st()->recent_messages(direction=>$dir,limit=>$cfg->{WEB_PAGE_SIZE}); my $s=st()->stats(); my $body=pagehead('Mail',$name{$dir},'Latest messages classified as '.lc($name{$dir}).'.').'<div class="kpis">'.kpi($name{$dir},$s->{$dir}||0,'cumulative total',$dir eq 'outbound'?'purple':$dir eq 'internal'?'teal':'blue').'</div><section class="panel mt">'.msg_table($rows,$prefix).'</section>'; return html_response(200,layout($name{$dir},$body,$prefix,"/direction/$dir"));
     }
+    if($path eq '/ips'){
+        my $rows=st()->top_ips(100);
+
+        my @tr=map {
+            '<tr>'.
+            '<td><span class="qid">'.h($_->{ip}).'</span></td>'.
+            '<td>'.fmt($_->{activity}).'</td>'.
+            '<td>'.fmt($_->{messages}).'</td>'.
+            '<td>'.fmt($_->{inbound}).'</td>'.
+            '<td>'.fmt($_->{outbound}).'</td>'.
+            '<td>'.fmt($_->{internal}).'</td>'.
+            '<td>'.fmt($_->{relay}).'</td>'.
+            '<td>'.fmt($_->{unknown}).'</td>'.
+            '<td>'.fmt($_->{rejected}).'</td>'.
+            '<td>'.fmt($_->{spam}).'</td>'.
+            '<td>'.fmt($_->{auth_success}).'</td>'.
+            '<td>'.fmt($_->{auth_failures}).'</td>'.
+            '<td>'.fmt($_->{tls_connections}).'</td>'.
+            '<td class="datecell">'.h($_->{last_activity}||'—').'</td>'.
+            '</tr>'
+        } @$rows;
+
+        my $body=
+            pagehead(
+                'Network',
+                'IP addresses',
+                'Combined SMTP client, authentication and TLS activity.'
+            ).
+            '<section class="panel">'.
+            section_head(
+                'Top IP addresses',
+                'Activity = messages + authentication events + TLS connections'
+            ).
+            simple_table(
+                [
+                    'IP',
+                    'Activity',
+                    'Messages',
+                    'Inbound',
+                    'Outbound',
+                    'Internal',
+                    'Relay',
+                    'Unknown',
+                    'Rejected',
+                    'Spam',
+                    'Auth OK',
+                    'Auth failures',
+                    'TLS',
+                    'Last activity'
+                ],
+                \@tr
+            ).
+            '</section>';
+
+        return html_response(
+            200,
+            layout('IP addresses',$body,$prefix,'/ips')
+        );
+    }
+
     if($path eq '/senders'){
         my $rows=st()->top_senders(40); my $body=pagehead('Mail','Senders','Cumulative sender ranking.').'<section class="panel">'.top_table($rows,'sender','count',sub{my$r=shift;'delivered '.fmt($r->{delivered}).' · spam '.fmt($r->{spam})},'blue').'</section>'; return html_response(200,layout('Senders',$body,$prefix,'/senders'));
     }

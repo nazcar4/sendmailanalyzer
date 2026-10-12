@@ -52,6 +52,7 @@ sub init_schema {
     $d->do(q{CREATE INDEX IF NOT EXISTS idx_messages_seen ON messages(last_seen)});
     $d->do(q{CREATE INDEX IF NOT EXISTS idx_messages_first_seen ON messages(first_seen)});
     $d->do(q{CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender)});
+    $d->do(q{CREATE INDEX IF NOT EXISTS idx_messages_client_ip ON messages(client_ip) WHERE client_ip IS NOT NULL AND client_ip <> ''});
     $d->do(q{CREATE TABLE IF NOT EXISTS recipients (
       id INTEGER PRIMARY KEY AUTOINCREMENT, queue_id TEXT NOT NULL, recipient TEXT, status TEXT, dsn TEXT, relay TEXT, timestamp TEXT,
       UNIQUE(queue_id,recipient,status,dsn,relay,timestamp)
@@ -72,11 +73,13 @@ sub init_schema {
       client_ip TEXT, success INTEGER NOT NULL, detail TEXT, fingerprint TEXT UNIQUE
     )});
     $d->do(q{CREATE INDEX IF NOT EXISTS idx_auth_time ON auth_events(timestamp)});
+    $d->do(q{CREATE INDEX IF NOT EXISTS idx_auth_client_ip ON auth_events(client_ip) WHERE client_ip IS NOT NULL AND client_ip <> ''});
     $d->do(q{CREATE TABLE IF NOT EXISTS tls_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, host TEXT, direction TEXT, peer_host TEXT, peer_ip TEXT, protocol TEXT,
       cipher TEXT, bits TEXT, trust TEXT, fingerprint TEXT UNIQUE
     )});
     $d->do(q{CREATE INDEX IF NOT EXISTS idx_tls_time ON tls_events(timestamp)});
+    $d->do(q{CREATE INDEX IF NOT EXISTS idx_tls_peer_ip ON tls_events(peer_ip) WHERE peer_ip IS NOT NULL AND peer_ip <> ''});
     $d->do(q{CREATE TABLE IF NOT EXISTS legacy_aggregates (
       day TEXT NOT NULL, hour TEXT NOT NULL DEFAULT '', metric TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', count INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(day,hour,metric,detail)
@@ -91,7 +94,7 @@ sub init_schema {
     # 10.0.0-10.0.2 could create recipient placeholder rows with NULL status.
     # They carry no delivery fact and can double-count recipient statistics.
     $d->do(q{DELETE FROM recipients WHERE status IS NULL});
-    $d->do(q{INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','8')});
+    $d->do(q{INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','9')});
 }
 sub _fingerprint {
     my ($self,$e)=@_; return sha1_hex(join("\0", map { defined $_ ? $_ : '' } @{$e}{qw(timestamp host source type queue_id message_id raw legacy_locator)}));
@@ -495,6 +498,179 @@ sub spam_daily_series {
     }
     return [map {$by{$_}} sort keys %by];
 }
+sub top_ips {
+    my ($self,$limit,$from,$to)=@_;
+
+    $limit=50 if !defined($limit) || $limit<1;
+    $limit=500 if $limit>500;
+
+    my %ips;
+
+    my $row_for=sub {
+        my($ip)=@_;
+        return ($ips{$ip} ||= {
+            ip              => $ip,
+            activity        => 0,
+            messages        => 0,
+            rejected        => 0,
+            spam            => 0,
+            inbound         => 0,
+            outbound        => 0,
+            internal        => 0,
+            relay           => 0,
+            unknown         => 0,
+            auth_success    => 0,
+            auth_failures   => 0,
+            tls_connections => 0,
+            last_activity   => undef,
+        });
+    };
+
+    my $touch=sub {
+        my($r,$timestamp)=@_;
+        return if !defined($timestamp) || $timestamp eq '';
+
+        if (!defined($r->{last_activity}) || $r->{last_activity} eq '') {
+            $r->{last_activity}=$timestamp;
+            return;
+        }
+
+        my $new_epoch=_timestamp_epoch($timestamp);
+        my $old_epoch=_timestamp_epoch($r->{last_activity});
+
+        if (
+            (defined($new_epoch) && defined($old_epoch) && $new_epoch>$old_epoch)
+            ||
+            (defined($new_epoch) && !defined($old_epoch))
+            ||
+            (!defined($new_epoch) && !defined($old_epoch) && $timestamp gt $r->{last_activity})
+        ) {
+            $r->{last_activity}=$timestamp;
+        }
+    };
+
+    my (@mw,@mb);
+    push @mw,q{client_ip IS NOT NULL AND client_ip <> ''};
+    if (defined($from) && $from ne '') {
+        push @mw,'first_seen >= ?';
+        push @mb,$from;
+    }
+    if (defined($to) && $to ne '') {
+        push @mw,'first_seen <= ?';
+        push @mb,$to;
+    }
+
+    my $messages=$self->{dbh}->selectall_arrayref(
+        'SELECT
+            client_ip ip,
+            COUNT(*) messages,
+            COALESCE(SUM(rejected),0) rejected,
+            COALESCE(SUM(spam_detected),0) spam,
+            COALESCE(SUM(CASE WHEN direction="inbound" THEN 1 ELSE 0 END),0) inbound,
+            COALESCE(SUM(CASE WHEN direction="outbound" THEN 1 ELSE 0 END),0) outbound,
+            COALESCE(SUM(CASE WHEN direction="internal" THEN 1 ELSE 0 END),0) internal,
+            COALESCE(SUM(CASE WHEN direction="relay" THEN 1 ELSE 0 END),0) relay,
+            COALESCE(SUM(CASE WHEN direction IS NULL OR direction="" OR direction="unknown" THEN 1 ELSE 0 END),0) unknown,
+            MAX(COALESCE(last_seen,first_seen)) last_activity
+         FROM messages
+         WHERE '.join(' AND ',@mw).'
+         GROUP BY client_ip',
+        {Slice=>{}},
+        @mb
+    );
+
+    for my $x (@$messages) {
+        my $r=$row_for->($x->{ip});
+        for my $k (qw(messages rejected spam inbound outbound internal relay unknown)) {
+            $r->{$k} += 0+($x->{$k}||0);
+        }
+        $touch->($r,$x->{last_activity});
+    }
+
+    my (@aw,@ab);
+    push @aw,q{client_ip IS NOT NULL AND client_ip <> ''};
+    if (defined($from) && $from ne '') {
+        push @aw,'timestamp >= ?';
+        push @ab,$from;
+    }
+    if (defined($to) && $to ne '') {
+        push @aw,'timestamp <= ?';
+        push @ab,$to;
+    }
+
+    my $auth=$self->{dbh}->selectall_arrayref(
+        'SELECT
+            client_ip ip,
+            COALESCE(SUM(CASE WHEN success=1 THEN 1 ELSE 0 END),0) auth_success,
+            COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) auth_failures,
+            MAX(timestamp) last_activity
+         FROM auth_events
+         WHERE '.join(' AND ',@aw).'
+         GROUP BY client_ip',
+        {Slice=>{}},
+        @ab
+    );
+
+    for my $x (@$auth) {
+        my $r=$row_for->($x->{ip});
+        $r->{auth_success}  += 0+($x->{auth_success}||0);
+        $r->{auth_failures} += 0+($x->{auth_failures}||0);
+        $touch->($r,$x->{last_activity});
+    }
+
+    my (@tw,@tb);
+    push @tw,q{peer_ip IS NOT NULL AND peer_ip <> ''};
+    if (defined($from) && $from ne '') {
+        push @tw,'timestamp >= ?';
+        push @tb,$from;
+    }
+    if (defined($to) && $to ne '') {
+        push @tw,'timestamp <= ?';
+        push @tb,$to;
+    }
+
+    my $tls=$self->{dbh}->selectall_arrayref(
+        'SELECT
+            peer_ip ip,
+            COUNT(*) tls_connections,
+            MAX(timestamp) last_activity
+         FROM tls_events
+         WHERE '.join(' AND ',@tw).'
+         GROUP BY peer_ip',
+        {Slice=>{}},
+        @tb
+    );
+
+    for my $x (@$tls) {
+        my $r=$row_for->($x->{ip});
+        $r->{tls_connections} += 0+($x->{tls_connections}||0);
+        $touch->($r,$x->{last_activity});
+    }
+
+    my @out=values %ips;
+
+    for my $r (@out) {
+        $r->{activity}=
+            0+($r->{messages}||0)
+            +0+($r->{auth_success}||0)
+            +0+($r->{auth_failures}||0)
+            +0+($r->{tls_connections}||0);
+    }
+
+    @out=sort {
+        $b->{activity} <=> $a->{activity}
+        ||
+        $b->{messages} <=> $a->{messages}
+        ||
+        $b->{auth_failures} <=> $a->{auth_failures}
+        ||
+        $a->{ip} cmp $b->{ip}
+    } @out;
+
+    splice(@out,$limit) if @out>$limit;
+    return \@out;
+}
+
 sub top_senders {
     my ($self,$limit,$from,$to)=@_; $limit||=20; my(@w,@b); if($from){push @w,'first_seen >= ?';push @b,$from} if($to){push @w,'first_seen <= ?';push @b,$to} my $where=@w?'WHERE '.join(' AND ',@w):'';
     return $self->{dbh}->selectall_arrayref("SELECT COALESCE(NULLIF(sender,''),'Sender unavailable in historical data') sender, COUNT(*) count, SUM(delivered_count) delivered, SUM(spam_detected) spam FROM messages $where GROUP BY sender ORDER BY count DESC LIMIT ?",{Slice=>{}},@b,$limit);
