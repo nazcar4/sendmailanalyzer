@@ -17,6 +17,10 @@ rejected the message.
 
 ## Current revision
 
+`10.0.16-20` fixes native Postfix DSN reporting, preserves legacy DSN
+statistics without double counting, and adds grouped 2.x.x, 4.x.x and 5.x.x
+delivery-status summaries to the web dashboard.
+
 `10.0.16-19` adds visual dashboard insights and a transactional dedicated
 reporting-site installer. Fresh installations can publish a host such as
 `reports.example.test`, reuse an existing TLS certificate, create bcrypt

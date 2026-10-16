@@ -131,7 +131,7 @@ sub sidebar_nav {
       side_link($prefix,'/','Messaging',$active,'blue').
       side_link($prefix,'/spam','Spam',$active,'amber').
       side_link($prefix,'/viruses','Virus',$active,'red').
-      side_link($prefix,'/dsn','Notifications / DSN',$active,'teal').
+      side_link($prefix,'/dsn','Delivery status / DSN',$active,'teal').
       side_link($prefix,'/rejects','Rejections and errors',$active,'red').
       side_link($prefix,'/status','Status / Flow',$active,'blue').
       side_link($prefix,'/health','Health',$active,'teal').
@@ -693,8 +693,46 @@ my $app=sub{
         my $r=st()->rspamd_native_stats(); my $e=st()->engine_stats(); my $settings=top_table($r->{settings}||[],'settings_id','count',undef,'purple'); my $forced=top_table($r->{forced}||[],'forced_action','count',undef,'red'); my @actions=map{'<tr><td>'.h($_->{action}).'</td><td>'.fmt($_->{count}).'</td></tr>'}@{$e->{rspamd}||[]}; my $body=pagehead('Security','Rspamd','Native log: actions, settings and force_actions.').'<div class="kpis">'.kpi('Native scans',$r->{scans},'rspamd.log','purple').'</div><div class="two mt"><section class="panel">'.section_head('Settings','Applied profiles').$settings.'</section><section class="panel">'.section_head('Forced actions','Forced actions').$forced.'</section></div><section class="panel mt">'.section_head('Final actions','Per-message summary').simple_table(['Action','Total'],\@actions).'</section>'; return html_response(200,layout('Rspamd',$body,$prefix,'/rspamd'));
     }
     if($path eq '/dsn'){
-        my $d=st()->dsn_stats(); my @tr=map{'<tr><td>'.h($_->{status}).'</td><td>'.fmt($_->{count}).'</td></tr>'}@$d; my $s=st()->stats(); my $body=pagehead('Messaging','Notifications / DSN','Recorded delivery-status notification states.').'<div class="kpis">'.kpi('DSN events',$s->{dsn_events},'cumulative','teal').'</div><section class="panel mt">'.simple_table(['Status','Total'],\@tr).'</section>'; return html_response(200,layout('Notifications / DSN',$body,$prefix,'/dsn'));
+        my $d=st()->dsn_stats();
+        my($success,$temporary,$permanent)=(0,0,0);
+
+        for my $r (@$d) {
+            my $code=$r->{status}||'';
+            my $count=0+($r->{count}||0);
+
+            $success   += $count if $code =~ /^2\./;
+            $temporary += $count if $code =~ /^4\./;
+            $permanent += $count if $code =~ /^5\./;
+        }
+
+        my @tr=map{
+            '<tr><td>'.h($_->{status}).'</td><td>'.fmt($_->{count}).'</td></tr>'
+        } @$d;
+
+        my $s=st()->stats();
+
+        my $body=
+            pagehead(
+                'Messaging',
+                'Delivery status / DSN',
+                'Enhanced delivery-status codes recorded for recipient delivery attempts.'
+            )
+            .'<div class="kpis">'
+            .kpi('DSN events',$s->{dsn_events},'cumulative','teal')
+            .kpi('Success 2.x.x',$success,'successful','green')
+            .kpi('Temporary 4.x.x',$temporary,'temporary failure','amber')
+            .kpi('Permanent 5.x.x',$permanent,'permanent failure','red')
+            .'</div>'
+            .'<section class="panel mt">'
+            .simple_table(['DSN code / status','Total'],\@tr)
+            .'</section>';
+
+        return html_response(
+            200,
+            layout('Delivery status / DSN',$body,$prefix,'/dsn')
+        );
     }
+
     if($path eq '/status'){
         my $s=st()->stats(); my $flow=segmented_meter([{label=>'Inbound',value=>$s->{inbound}||0,kind=>'blue'},{label=>'Outbound',value=>$s->{outbound}||0,kind=>'purple'},{label=>'Internal',value=>$s->{internal}||0,kind=>'teal'},{label=>'Relay',value=>$s->{relay}||0,kind=>'gray'}]); my $body=pagehead('Messaging','Status / Flow','Cumulative traffic distribution and final status.').'<div class="kpis">'.kpi('Messages',$s->{messages},'total','blue').kpi('Deliveries',$s->{delivered},'recipients','green').kpi('Rejections',$s->{rejected},'messages','red').kpi('Deferred',$s->{deferred},'pending','amber').kpi('Bounced',$s->{bounced},'bounced','red').kpi('Relay',$s->{relay},'transit','teal').'</div><section class="panel mt">'.section_head('Flow direction','Cumulative distribution').$flow.'</section>'; return html_response(200,layout('Status / Flow',$body,$prefix,'/status'));
     }

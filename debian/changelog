@@ -1,3 +1,15 @@
+sendmailanalyzer (10.0.16-20) stable; urgency=medium
+
+  * Fix native Postfix DSN reporting by using normalized recipient delivery
+    status codes instead of relying only on legacy explicit DSN events.
+  * Preserve explicit and synthetic legacy DSN statistics without double
+    counting historical records.
+  * Add 2.x.x, 4.x.x and 5.x.x delivery-status summaries to the DSN dashboard.
+  * Rename the web section to Delivery status / DSN and add regression coverage
+    for native, ranged and legacy DSN accounting.
+
+ -- Nazcar <nazcar@almogavers.net>  Fri, 16 Oct 2026 10:01:54 +0200
+
 sendmailanalyzer (10.0.16-19) stable; urgency=medium
 
   * Add visual dashboard insights and mutually exclusive message outcomes.

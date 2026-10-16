@@ -1,5 +1,18 @@
 # SendmailAnalyzer 10 changelog
 
+## Debian revision 10.0.16-20 — native DSN reporting
+
+- Fix the Delivery status / DSN dashboard to count native Postfix enhanced
+  delivery-status codes from normalized recipient records.
+- Preserve explicit legacy DSN events and bounded synthetic legacy aggregates
+  without double counting either representation.
+- Add cumulative 2.x.x success, 4.x.x temporary-failure and 5.x.x
+  permanent-failure summaries.
+- Rename the former Notifications / DSN section to Delivery status / DSN to
+  reflect that successful delivery codes are included as well.
+- Add regression coverage for native DSN grouping, date-range filtering and
+  legacy real-versus-synthetic storage behavior.
+
 ## Debian revision 10.0.16-19 — visual dashboard and dedicated site installer
 
 - Add SVG Mail activity and Message outcome graphics plus visual IP/ASN

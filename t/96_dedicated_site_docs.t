@@ -79,14 +79,14 @@ for my $pkg (qw(debconf apache2-utils bind9-utils openssl)) {
 
 like(
     $readme,
-    qr/10\.0\.16-19/,
-    'README documents Debian revision 10.0.16-19'
+    qr/10\.0\.16-20/,
+    'README documents Debian revision 10.0.16-20'
 );
 
 like(
     $change,
-    qr/10\.0\.16-19/,
-    'project changelog documents Debian revision 10.0.16-19'
+    qr/10\.0\.16-20/,
+    'project changelog documents Debian revision 10.0.16-20'
 );
 
 my $combined=join "\n",$install,$config,$migration;

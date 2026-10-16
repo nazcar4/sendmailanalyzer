@@ -292,18 +292,34 @@ sub stats {
 }
 sub stats_range {
     my ($self,$from,$to)=@_;
-    my (@mw,@mb,@ew,@eb);
-    if (defined($from) && $from ne '') { push @mw,'first_seen >= ?'; push @mb,$from; push @ew,'timestamp >= ?'; push @eb,$from; }
-    if (defined($to) && $to ne '') { push @mw,'first_seen <= ?'; push @mb,$to; push @ew,'timestamp <= ?'; push @eb,$to; }
+    my (@mw,@mb,@ew,@eb,@rw,@rb);
+    if (defined($from) && $from ne '') {
+        push @mw,'first_seen >= ?'; push @mb,$from;
+        push @ew,'timestamp >= ?'; push @eb,$from;
+        push @rw,'timestamp >= ?'; push @rb,$from;
+    }
+    if (defined($to) && $to ne '') {
+        push @mw,'first_seen <= ?'; push @mb,$to;
+        push @ew,'timestamp <= ?'; push @eb,$to;
+        push @rw,'timestamp <= ?'; push @rb,$to;
+    }
     my $mwhere=@mw?'WHERE '.join(' AND ',@mw):'';
     my $eprefix=@ew?'WHERE '.join(' AND ',@ew).' AND ':'WHERE ';
+    my $rprefix=@rw?'WHERE '.join(' AND ',@rw).' AND ':'WHERE ';
     my $row=$self->{dbh}->selectrow_hashref("SELECT COUNT(*) messages, COALESCE(SUM(delivered_count),0) delivered, COALESCE(SUM(bounced_count),0) bounced, COALESCE(SUM(deferred_count),0) deferred, COALESCE(SUM(rejected),0) rejected, COALESCE(SUM(spam_detected),0) spam_detected, COALESCE(SUM(spam_rejected),0) spam_rejected, COALESCE(SUM(spam_delivered),0) spam_delivered, SUM(CASE WHEN direction='inbound' THEN 1 ELSE 0 END) inbound, SUM(CASE WHEN direction='outbound' THEN 1 ELSE 0 END) outbound, SUM(CASE WHEN direction='internal' THEN 1 ELSE 0 END) internal, SUM(CASE WHEN direction='relay' THEN 1 ELSE 0 END) relay, SUM(CASE WHEN direction IS NULL OR direction='' OR direction='unknown' THEN 1 ELSE 0 END) unknown, COALESCE(SUM(size),0) bytes FROM messages $mwhere",undef,@mb);
     my $dns=$self->{dbh}->selectrow_array("SELECT COUNT(*) FROM events ${eprefix}source='postscreen' AND type='dnsbl_reject'",undef,@eb);
     my $smtprej=$self->{dbh}->selectrow_array("SELECT COUNT(*) FROM events ${eprefix}type='smtp_reject'",undef,@eb);
     my $authfail=$self->{dbh}->selectrow_array("SELECT COUNT(*) FROM auth_events ".(@ew?'WHERE '.join(' AND ',@ew).' AND ':'WHERE ')."success=0",undef,@eb);
     my $authok=$self->{dbh}->selectrow_array("SELECT COUNT(*) FROM auth_events ".(@ew?'WHERE '.join(' AND ',@ew).' AND ':'WHERE ')."success=1",undef,@eb);
     my $tls=$self->{dbh}->selectrow_array("SELECT COUNT(*) FROM tls_events".(@ew?' WHERE '.join(' AND ',@ew):''),undef,@eb);
-    my $dsn=$self->{dbh}->selectrow_array("SELECT COUNT(*) FROM events ${eprefix}type='dsn'",undef,@eb);
+    my $dsn_native=$self->{dbh}->selectrow_array(
+        "SELECT COUNT(*) FROM recipients ${rprefix}dsn IS NOT NULL AND trim(dsn) <> ''",
+        undef,@rb
+    );
+    my $dsn_explicit=$self->{dbh}->selectrow_array(
+        "SELECT COUNT(*) FROM events ${eprefix}type='dsn'",
+        undef,@eb
+    );
     my $virus=$self->{dbh}->selectrow_array("SELECT COUNT(*) FROM messages ".(@mw?'WHERE '.join(' AND ',@mw).' AND ':'WHERE ')."lower(COALESCE(av_status,'')) NOT IN ('','clean','ok')",undef,@mb);
     $row->{dnsbl_rejected}=0+$dns; $row->{smtp_rejected}=0+$smtprej; $row->{auth_failures}=0+$authfail; $row->{auth_success}=0+$authok;
     $row->{smtp_rejected}=0+$smtprej+$self->_legacy_agg_sum('smtp_rejected',$from,$to);
@@ -314,7 +330,7 @@ sub stats_range {
     $row->{bounced}=0+($row->{bounced}||0)+$self->_legacy_agg_sum('delivery_bounced',$from,$to);
     $row->{deferred}=0+($row->{deferred}||0)+$self->_legacy_agg_sum('delivery_deferred',$from,$to);
     $row->{tls_connections}=0+$tls;
-    $row->{dsn_events}=0+$dsn+$self->_legacy_agg_sum('dsn_events',$from,$to);
+    $row->{dsn_events}=0+$dsn_native+0+$dsn_explicit+$self->_legacy_agg_sum('dsn_events',$from,$to);
     $row->{virus_detected}=0+$virus+$self->_legacy_agg_sum('virus_detected',$from,$to); return $row;
 }
 sub recent_messages {
@@ -768,11 +784,60 @@ sub tls_stats {
     return $self->{dbh}->selectall_arrayref(q{SELECT COALESCE(direction,'unknown') direction, COALESCE(protocol,'unknown') protocol, COUNT(*) count FROM tls_events GROUP BY direction,protocol ORDER BY count DESC},{Slice=>{}});
 }
 sub dsn_stats {
-    my ($self)=@_; my %x;
-    for my $r (@{$self->{dbh}->selectall_arrayref(q{SELECT COALESCE(json_extract(data_json,'$.status'),'unknown') status, COUNT(*) count FROM events WHERE type='dsn' GROUP BY status},{Slice=>{}})}) { $x{$r->{status}}+=$r->{count}; }
-    for my $r (@{$self->{dbh}->selectall_arrayref(q{SELECT COALESCE(NULLIF(detail,''),'unknown') status,SUM(count) count FROM legacy_aggregates WHERE metric='dsn_events' GROUP BY status},{Slice=>{}})}) { $x{$r->{status}}+=$r->{count}; }
-    return [sort {$b->{count}<=>$a->{count}} map {{status=>$_,count=>$x{$_}}} keys %x];
+    my ($self)=@_;
+    my %x;
+
+    # Native v10 Postfix delivery events are normalized into recipients.dsn.
+    for my $r (@{$self->{dbh}->selectall_arrayref(q{
+        SELECT trim(dsn) status, COUNT(*) count
+        FROM recipients
+        WHERE dsn IS NOT NULL
+          AND trim(dsn) <> ''
+        GROUP BY trim(dsn)
+    },{Slice=>{}})}) {
+        $x{$r->{status}} += $r->{count};
+    }
+
+    # Preserve compatibility with explicit DSN events imported from legacy data.
+    for my $r (@{$self->{dbh}->selectall_arrayref(q{
+        SELECT
+            COALESCE(
+                NULLIF(trim(json_extract(data_json,'$.status')),''),
+                'unknown'
+            ) status,
+            COUNT(*) count
+        FROM events
+        WHERE type='dsn'
+        GROUP BY status
+    },{Slice=>{}})}) {
+        $x{$r->{status}} += $r->{count};
+    }
+
+    # Preserve synthetic legacy aggregates when individual records were unavailable.
+    for my $r (@{$self->{dbh}->selectall_arrayref(q{
+        SELECT
+            COALESCE(NULLIF(trim(detail),''),'unknown') status,
+            SUM(count) count
+        FROM legacy_aggregates
+        WHERE metric='dsn_events'
+        GROUP BY status
+    },{Slice=>{}})}) {
+        $x{$r->{status}} += $r->{count};
+    }
+
+    return [
+        sort {
+            $b->{count} <=> $a->{count}
+            ||
+            $a->{status} cmp $b->{status}
+        }
+        map {
+            {status=>$_,count=>$x{$_}}
+        }
+        keys %x
+    ];
 }
+
 sub top_viruses {
     my ($self,$limit)=@_; $limit||=20; my %x;
     for my $r (@{$self->{dbh}->selectall_arrayref(q{SELECT COALESCE(NULLIF(virus_name,''),COALESCE(NULLIF(av_status,''),'unknown')) virus, COUNT(*) count FROM messages WHERE lower(COALESCE(av_status,'')) NOT IN ('','clean','ok') GROUP BY virus},{Slice=>{}})}) { $x{$r->{virus}}+=$r->{count}; }
