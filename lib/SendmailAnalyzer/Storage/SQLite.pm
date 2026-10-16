@@ -468,6 +468,59 @@ sub month_daily_series {
     for my $a (@{$self->_legacy_agg_by_day('spam_detected',substr($from,0,10),$last)}) { $by{$a->{day}}{day}=$a->{day}; $by{$a->{day}}{spam_detected}=0+($by{$a->{day}}{spam_detected}||0)+$a->{count}; }
     return [map { my $r=$by{$_}; $r->{messages}=0+($r->{messages}||0); $r->{delivered}=0+($r->{delivered}||0); $r->{rejected}=0+($r->{rejected}||0); $r->{spam_detected}=0+($r->{spam_detected}||0); $r } sort keys %by];
 }
+sub status_summary {
+    my ($self,$from,$to)=@_;
+    my (@w,@b);
+
+    if (defined($from) && $from ne '') {
+        push @w,'first_seen >= ?';
+        push @b,$from;
+    }
+
+    if (defined($to) && $to ne '') {
+        push @w,'first_seen <= ?';
+        push @b,$to;
+    }
+
+    my $where=@w?'WHERE '.join(' AND ',@w):'';
+
+    my $row=$self->{dbh}->selectrow_hashref(
+        "SELECT
+            COUNT(*) messages,
+            COALESCE(SUM(CASE
+                WHEN rejected=1 THEN 1
+                ELSE 0
+            END),0) rejected,
+            COALESCE(SUM(CASE
+                WHEN rejected=0 AND deferred_count>0 THEN 1
+                ELSE 0
+            END),0) deferred,
+            COALESCE(SUM(CASE
+                WHEN rejected=0
+                 AND deferred_count=0
+                 AND delivered_count>0 THEN 1
+                ELSE 0
+            END),0) delivered,
+            COALESCE(SUM(CASE
+                WHEN rejected=0
+                 AND deferred_count=0
+                 AND delivered_count=0 THEN 1
+                ELSE 0
+            END),0) processed
+         FROM messages $where",
+        undef,
+        @b
+    ) || {};
+
+    return {
+        messages  => 0+($row->{messages}||0),
+        delivered => 0+($row->{delivered}||0),
+        rejected  => 0+($row->{rejected}||0),
+        deferred  => 0+($row->{deferred}||0),
+        processed => 0+($row->{processed}||0),
+    };
+}
+
 sub flow_summary {
     my ($self,$from,$to)=@_;
     my (@w,@b);

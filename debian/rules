@@ -47,8 +47,8 @@ binary-indep: build
 	cp -a examples/. $(PKGDIR)/usr/share/$(PACKAGE)/examples/
 	install -m 0644 config/sendmailanalyzer.conf $(PKGDIR)/usr/share/$(PACKAGE)/defaults/sendmailanalyzer.conf
 	dpkg-gencontrol -p$(PACKAGE) -P$(PKGDIR)
-	install -m 0755 debian/preinst debian/postinst debian/prerm debian/postrm $(PKGDIR)/DEBIAN/
-	install -m 0644 debian/conffiles $(PKGDIR)/DEBIAN/conffiles
+	install -m 0755 debian/config debian/preinst debian/postinst debian/prerm debian/postrm $(PKGDIR)/DEBIAN/
+	install -m 0644 debian/templates debian/conffiles $(PKGDIR)/DEBIAN/
 	find $(PKGDIR) -type d -exec chmod 0755 {} +
 	find $(PKGDIR)/usr/lib/sendmailanalyzer/bin -type f -exec chmod 0644 {} +
 	@for b in bin/*; do \

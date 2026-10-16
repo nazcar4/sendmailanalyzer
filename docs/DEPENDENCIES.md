@@ -20,14 +20,18 @@ manual CPAN installation is required.
 | `systemd` | Collector/web units and `systemd-tmpfiles`. |
 | `tar` | Manual legacy 9.4 archive tooling and source/package operations. |
 | `gzip` | Compressed historical log support and reproducible documentation/package output. |
+| `debconf` | Interactive/preseedable dedicated reporting-site configuration during Debian installation. |
 | `libdbi-perl` | Perl DBI layer. |
 | `libdbd-sqlite3-perl` | SQLite DBI driver. |
 | `libplack-perl` | PSGI server (`plackup`). |
 | `liburi-perl` | Safe URL and query-parameter encoding/decoding. |
 
-`apache2` and `rsyslog` are **Recommends** rather than hard dependencies. The
-application can run without exposing the web interface through Apache and does
-not impose a replacement logging policy.
+`apache2`, `apache2-utils`, `bind9-utils`, `openssl` and `rsyslog` are
+**Recommends** rather than hard dependencies. Apache provides the reverse
+proxy, `apache2-utils` provides `htpasswd`, BIND utilities provide local zone
+validation/signing tools when local DNS management is applicable, and OpenSSL
+validates certificate expiry and hostname coverage. The core analyzer can run
+without publishing its web interface or managing local DNS.
 
 ## Optional ASN enrichment
 

@@ -1,0 +1,211 @@
+#!/bin/sh
+
+. /usr/share/debconf/confmodule
+
+domain_default=$(hostname -d 2>/dev/null || true)
+[ -n "$domain_default" ] || domain_default='example.test'
+
+subdomain_default='reports'
+username_default='sendmailreports'
+lan_default=''
+address_default=''
+existing_fqdn=''
+existing_user=''
+existing_lan=''
+
+if command -v ip >/dev/null 2>&1; then
+    lan_default=$(
+        ip -o -4 route show scope link 2>/dev/null |
+        awk '
+            $1 != "default" &&
+            $1 ~ /\// &&
+            $1 !~ /^127\./ {
+                print $1
+                exit
+            }
+        '
+    )
+fi
+
+for site in /etc/apache2/sites-available/*.conf; do
+    [ -r "$site" ] || continue
+
+    if grep -Eq \
+        '^[[:space:]]*ProxyPass[[:space:]]+/[[:space:]]+http://127\.0\.0\.1:9080/[[:space:]]*$' \
+        "$site"; then
+
+        existing_fqdn=$(
+            awk '
+                $1=="ServerName" {
+                    print $2
+                    exit
+                }
+            ' "$site"
+        )
+
+        existing_user=$(
+            awk '
+                $1=="Require" && $2=="user" {
+                    print $3
+                    exit
+                }
+            ' "$site"
+        )
+
+        existing_lan=$(
+            awk '
+                $1=="Require" && $2=="ip" {
+                    for (i=3; i<=NF; i++) {
+                        if ($i != "127.0.0.1" &&
+                            $i != "::1") {
+                            print $i
+                            exit
+                        }
+                    }
+                }
+            ' "$site"
+        )
+
+        [ -n "$existing_fqdn" ] && break
+    fi
+done
+
+if [ -n "$existing_fqdn" ] &&
+   printf '%s\n' "$existing_fqdn" | grep -q '\.'; then
+
+    subdomain_default=${existing_fqdn%%.*}
+    domain_default=${existing_fqdn#*.}
+fi
+
+if [ -n "$existing_user" ]; then
+    username_default=$existing_user
+fi
+
+if [ -n "$existing_lan" ]; then
+    lan_default=$existing_lan
+fi
+
+if command -v getent >/dev/null 2>&1; then
+    if [ -n "$existing_fqdn" ]; then
+        address_default=$(
+            getent ahostsv4 "$existing_fqdn" 2>/dev/null |
+            awk '
+                $1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {
+                    print $1
+                    exit
+                }
+            '
+        )
+    fi
+
+    if [ -z "$address_default" ]; then
+        address_default=$(
+            getent ahostsv4 "$domain_default" 2>/dev/null |
+            awk '
+                $1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {
+                    print $1
+                    exit
+                }
+            '
+        )
+    fi
+fi
+
+db_get sendmailanalyzer/site_enable
+[ -n "${RET:-}" ] ||
+    db_set sendmailanalyzer/site_enable true
+
+db_get sendmailanalyzer/site_domain
+[ -n "${RET:-}" ] ||
+    db_set sendmailanalyzer/site_domain "$domain_default"
+
+db_get sendmailanalyzer/site_subdomain
+[ -n "${RET:-}" ] ||
+    db_set sendmailanalyzer/site_subdomain "$subdomain_default"
+
+db_get sendmailanalyzer/site_address
+[ -n "${RET:-}" ] ||
+    db_set sendmailanalyzer/site_address "$address_default"
+
+db_get sendmailanalyzer/site_username
+[ -n "${RET:-}" ] ||
+    db_set sendmailanalyzer/site_username "$username_default"
+
+db_get sendmailanalyzer/site_lan
+[ -n "${RET:-}" ] ||
+    db_set sendmailanalyzer/site_lan "$lan_default"
+
+# An already deployed dedicated root vhost is authoritative during upgrades.
+# Do not allow stale Debconf values from an older package revision to repoint it.
+if [ -n "$existing_fqdn" ]; then
+    db_set sendmailanalyzer/site_enable true
+    db_set sendmailanalyzer/site_domain "$domain_default"
+    db_set sendmailanalyzer/site_subdomain "$subdomain_default"
+    db_set sendmailanalyzer/site_username "$username_default"
+
+    [ -z "$address_default" ] ||
+        db_set sendmailanalyzer/site_address "$address_default"
+
+    [ -z "$lan_default" ] ||
+        db_set sendmailanalyzer/site_lan "$lan_default"
+fi
+
+if [ -n "$existing_fqdn" ]; then
+    for question in \
+        site_enable \
+        site_domain \
+        site_subdomain \
+        site_address \
+        site_username \
+        site_lan
+    do
+        db_fset \
+            "sendmailanalyzer/$question" \
+            seen \
+            true \
+            >/dev/null 2>&1 || true
+    done
+fi
+
+db_input medium sendmailanalyzer/site_enable || true
+db_go || true
+
+db_get sendmailanalyzer/site_enable
+
+if [ "${RET:-false}" = true ]; then
+    db_input medium sendmailanalyzer/site_domain || true
+    db_input medium sendmailanalyzer/site_subdomain || true
+    db_input medium sendmailanalyzer/site_address || true
+    db_input medium sendmailanalyzer/site_username || true
+    db_input medium sendmailanalyzer/site_lan || true
+    db_go || true
+
+    db_get sendmailanalyzer/site_username
+    site_user=${RET:-sendmailreports}
+
+    auth_exists=0
+
+    if [ -r /etc/apache2/auth/sendmailanalyzer.htpasswd ]; then
+        if awk \
+            -F: \
+            -v user="$site_user" \
+            '$1==user {found=1} END {exit(found ? 0 : 1)}' \
+            /etc/apache2/auth/sendmailanalyzer.htpasswd; then
+
+            auth_exists=1
+        fi
+    fi
+
+    if [ "$auth_exists" -eq 0 ]; then
+        db_input high sendmailanalyzer/site_password || true
+        db_go || true
+    else
+        db_fset \
+            sendmailanalyzer/site_password \
+            seen \
+            true \
+            >/dev/null 2>&1 || true
+    fi
+fi
+
+return 0 2>/dev/null || true

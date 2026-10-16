@@ -37,10 +37,15 @@ upgrades do not reinterpret 9.4 `.dat` files or `history.tar.gz` archives.
 
 ## Apache
 
-The preferred production route is `/reports/`. Existing custom routes are
-preserved when appropriate. When `/reports/` is already active, redundant old
-`/sareport/` or temporary routes are removed without reviving stale cross-site
-backups. Existing `Require` access rules are preserved per VirtualHost.
+The preferred production layout since Debian revision `10.0.16-19` is a
+dedicated HTTPS reporting subdomain reverse-proxied at `/` to the local PSGI
+service. Existing dedicated root-proxy installations are recognized as valid
+production integrations and are preserved unchanged when possible.
+
+Historical path-based `/reports/` integrations remain detectable for
+compatibility. Deprecated `/sareport/` and `/sareport10/` routes are not
+revived from stale backups, and existing access-control rules remain protected
+during migration decisions.
 
 ## Queue-ID handling
 

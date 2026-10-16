@@ -26,10 +26,15 @@ sub slurp {
 }
 sub has_custom_production_url {
     my ($txt)=@_; return 0 if !defined $txt;
-    while ($txt =~ m{^\s*ProxyPass\s+(/[^\s]+/)\s+http://127\.0\.0\.1:9080/\s*$}mig) {
+    while ($txt =~ m{^\s*ProxyPass\s+(/[^\s]*)\s+http://127\.0\.0\.1:9080/\s*$}mig) {
         my $u=$1; return 1 if $u ne '/sareport/' && $u ne '/sareport10/';
     }
     return 0;
+}
+
+sub has_root_production_url {
+    my ($txt)=@_; return 0 if !defined $txt;
+    return $txt =~ m{^\s*ProxyPass\s+/\s+http://127\.0\.0\.1:9080/\s*$}mi ? 1 : 0;
 }
 sub strip_deprecated_routes {
     my ($txt)=@_; my $orig=$txt;
@@ -85,7 +90,7 @@ sub temp_spec {
 }
 sub production_spec {
     my ($seg)=@_;
-    my ($url)=$seg =~ m{^\s*ProxyPass\s+(/[^\s]+/)\s+http://127\.0\.0\.1:9080/\s*$}mi;
+    my ($url)=$seg =~ m{^\s*ProxyPass\s+(/[^\s]*)\s+http://127\.0\.0\.1:9080/\s*$}mi;
     return if !defined $url || $url eq '/sareport/' || $url eq '/sareport10/';
     my @req;
     my $q=quotemeta($url);
@@ -185,8 +190,15 @@ for my $file (@files) {
     # live production route is in another file, do not let stale backups revive
     # retired /sareport[/10] integrations here.
     my $file_has_custom_production=has_custom_production_url($orig);
-    my $recover=(!$custom_production_present || $file_has_custom_production)
-        ? recovery_specs($file) : {};
+    my $file_has_root_production=has_root_production_url($orig);
+
+    # A dedicated vhost that proxies its root directly to SendmailAnalyzer is a
+    # complete production integration.  Never use historical Alias or path
+    # backups to recreate /reports/, /sareport/ or /sareport10/ beside it.
+    my $recover=(
+        !$custom_production_present
+        || ($file_has_custom_production && !$file_has_root_production)
+    ) ? recovery_specs($file) : {};
     my $ord=0; my $saw_vhost=0; my $file_changed=$default_stripped ? 1:0;
     $changed++ if $default_stripped;
     $text =~ s{(<VirtualHost\b[^>]*>.*?</VirtualHost>)}{

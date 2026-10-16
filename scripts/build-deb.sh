@@ -37,9 +37,9 @@ main() {
     cp "$ROOT/config/sendmailanalyzer.conf" "$PKG/usr/share/sendmailanalyzer/defaults/sendmailanalyzer.conf" || return 1
     : > "$TMP/substvars" || return 1
     (cd "$ROOT" && dpkg-gencontrol -psendmailanalyzer -P"$PKG" -f"$TMP/files" -T"$TMP/substvars") || return 1
-    cp "$ROOT/debian/conffiles" "$PKG/DEBIAN/conffiles" || return 1
-    cp "$ROOT/debian/preinst" "$ROOT/debian/postinst" "$ROOT/debian/prerm" "$ROOT/debian/postrm" "$PKG/DEBIAN/" || return 1
-    chmod 0755 "$PKG/DEBIAN/preinst" "$PKG/DEBIAN/postinst" "$PKG/DEBIAN/prerm" "$PKG/DEBIAN/postrm" || return 1
+    cp "$ROOT/debian/conffiles" "$ROOT/debian/templates" "$PKG/DEBIAN/" || return 1
+    cp "$ROOT/debian/config" "$ROOT/debian/preinst" "$ROOT/debian/postinst" "$ROOT/debian/prerm" "$ROOT/debian/postrm" "$PKG/DEBIAN/" || return 1
+    chmod 0755 "$PKG/DEBIAN/config" "$PKG/DEBIAN/preinst" "$PKG/DEBIAN/postinst" "$PKG/DEBIAN/prerm" "$PKG/DEBIAN/postrm" || return 1
     find "$PKG" -type d -exec chmod 0755 {} +
     find "$PKG/usr/lib/sendmailanalyzer/bin" -type f -exec chmod 0644 {} +
     for b in "$ROOT"/bin/*; do

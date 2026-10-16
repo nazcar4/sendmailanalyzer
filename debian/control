@@ -8,10 +8,10 @@ Rules-Requires-Root: no
 
 Package: sendmailanalyzer
 Architecture: all
-Depends: perl, passwd, acl, util-linux, systemd, tar, gzip, libdbi-perl, libdbd-sqlite3-perl, libplack-perl, liburi-perl
+Depends: perl, passwd, acl, util-linux, systemd, tar, gzip, debconf (>= 0.5) | debconf-2.0, libdbi-perl, libdbd-sqlite3-perl, libplack-perl, liburi-perl
 Conflicts: sendmailanalyzer10
 Replaces: sendmailanalyzer10
-Recommends: apache2, rsyslog
+Recommends: apache2, apache2-utils, bind9-utils, openssl, rsyslog
 Suggests: libmaxmind-db-reader-perl
 Description: modern Postfix-first mail log analyzer and web dashboard
  SendmailAnalyzer 10 correlates Postfix, Postscreen, SpamAssassin, native

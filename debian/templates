@@ -1,0 +1,50 @@
+Template: sendmailanalyzer/site_enable
+Type: boolean
+Default: true
+Description: Configure a dedicated SendmailAnalyzer web subdomain?
+ SendmailAnalyzer can publish its local PSGI service through a dedicated
+ HTTPS Apache VirtualHost such as reports.example.test.
+
+Template: sendmailanalyzer/site_domain
+Type: string
+Description: Existing DNS domain for the SendmailAnalyzer site:
+ Enter the existing base domain under which the reporting subdomain should
+ be created, for example example.test.
+
+Template: sendmailanalyzer/site_subdomain
+Type: string
+Default: reports
+Description: SendmailAnalyzer reporting subdomain:
+ This label is combined with the existing domain. The default creates a host
+ such as reports.example.test.
+
+Template: sendmailanalyzer/site_address
+Type: string
+Description: IPv4 address for the reporting subdomain:
+ When the selected domain is hosted by a local authoritative BIND zone,
+ SendmailAnalyzer can add this A record transactionally.
+ .
+ If DNS is hosted elsewhere, this value is still used to document the
+ external A record that should exist.
+
+Template: sendmailanalyzer/site_username
+Type: string
+Default: sendmailreports
+Description: Username for Internet access:
+ Localhost and the configured LAN may access the reporting site directly.
+ Other clients must authenticate with this username.
+
+Template: sendmailanalyzer/site_lan
+Type: string
+Description: LAN network allowed without a password:
+ Enter one IPv4 CIDR such as 192.0.2.0/24.
+ .
+ Localhost is always allowed. Leave this empty if no LAN bypass is wanted.
+
+Template: sendmailanalyzer/site_password
+Type: password
+Description: Password for Internet access:
+ Enter the password for the reporting-site Basic Auth account.
+ .
+ The clear-text value is used only to create a bcrypt htpasswd hash and is
+ cleared from the package configuration database after installation.

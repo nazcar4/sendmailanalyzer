@@ -44,7 +44,8 @@ my %allowed_header=map { lc($_)=>1 } qw(
     X-Spam-Status X-Spam-Flag X-Spam-Level
     X-Rspamd X-Rspamd-Action X-Rspamd-Score X-Rspamd-Server X-Rspamd-Queue-Id X-Spamd-Result
     X-Virus-Status X-Virus-Scanned
-    X-Forwarded-Prefix X-Content-Type-Options X-Frame-Options X-Header
+    X-Forwarded-Prefix X-Forwarded-Proto X-Forwarded-Port
+    X-Content-Type-Options X-Frame-Options X-Header
 );
 my @header_scan=(@functional,text_files('t'));
 my %unexpected_headers;

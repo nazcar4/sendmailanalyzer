@@ -1,5 +1,9 @@
 #!/bin/sh
 
+if [ -r /usr/share/debconf/confmodule ]; then
+    . /usr/share/debconf/confmodule
+fi
+
 restore_runtime_on_failure() {
     rc=${1:-1}
     printf '%s\n' "SendmailAnalyzer post-install failed (exit $rc); restoring pre-upgrade SQLite/configuration and service state." >&2
@@ -174,28 +178,197 @@ main() {
         fi
     fi
 
-    # Migrate the 9.4 Apache Alias/Directory integration to the v10 reverse
-    # proxy while preserving the old report URL and Require rules.  A fresh
-    # install receives a safe localhost-only /reports/ configuration.
+    # Normalize historical Apache integration first. A dedicated reporting
+    # VirtualHost is then created or validated by sa10_site_setup. Existing
+    # root-proxy installations, credentials and certificates are preserved.
     if command -v apache2ctl >/dev/null 2>&1; then
-        if command -v a2enmod >/dev/null 2>&1; then a2enmod proxy proxy_http headers alias >/dev/null 2>&1 || return 1; fi
-        AP_OUT=$(/usr/bin/sa10_apache_upgrade --apply --backup-dir "$BACKUP_ROOT/apache" 2>&1) || { printf '%s\n' "$AP_OUT" >&2; return 1; }
+        AP_OUT=$(
+            /usr/bin/sa10_apache_upgrade \
+                --apply \
+                --backup-dir "$BACKUP_ROOT/apache" \
+                2>&1
+        ) || {
+            printf '%s\n' "$AP_OUT" >&2
+            return 1
+        }
+
         printf '%s\n' "$AP_OUT"
-        AP_CHANGED=$(printf '%s\n' "$AP_OUT" | sed -n 's/^Apache migration changed=\([0-9][0-9]*\).*/\1/p' | tail -1)
-        AP_CONFIGURED=$(printf '%s\n' "$AP_OUT" | sed -n 's/^Apache migration changed=[0-9][0-9]* configured=\([0-9][0-9]*\).*/\1/p' | tail -1)
+
+        AP_CHANGED=$(
+            printf '%s\n' "$AP_OUT" |
+            sed -n \
+                's/^Apache migration changed=\([0-9][0-9]*\).*/\1/p' |
+            tail -1
+        )
+
         AP_CHANGED=${AP_CHANGED:-0}
-        AP_CONFIGURED=${AP_CONFIGURED:-0}
-        # A zero-change result can mean Apache is already correctly configured.
-        # Only install the fresh localhost-only example when no existing,
-        # migrated or recovered v10 integration was detected anywhere.
-        if [ "$AP_CONFIGURED" -eq 0 ] && [ -d /etc/apache2/conf-available ]; then
-            if [ ! -e /etc/apache2/conf-available/sendmailanalyzer.conf ]; then
-                install -m 0644 /usr/share/doc/sendmailanalyzer/apache2-sendmailanalyzer.conf /etc/apache2/conf-available/sendmailanalyzer.conf || return 1
-            fi
-            if command -v a2enconf >/dev/null 2>&1; then a2enconf sendmailanalyzer >/dev/null 2>&1 || return 1; fi
+
+        SITE_ENABLE=true
+        SITE_DOMAIN=$(hostname -d 2>/dev/null || true)
+        SITE_SUBDOMAIN=reports
+        SITE_ADDRESS=''
+        SITE_USER=sendmailreports
+        SITE_LAN=''
+        SITE_PASSWORD=''
+        SITE_RAN=0
+
+        if command -v db_get >/dev/null 2>&1; then
+            db_get sendmailanalyzer/site_enable || true
+            [ -z "${RET:-}" ] || SITE_ENABLE=$RET
+
+            db_get sendmailanalyzer/site_domain || true
+            [ -z "${RET:-}" ] || SITE_DOMAIN=$RET
+
+            db_get sendmailanalyzer/site_subdomain || true
+            [ -z "${RET:-}" ] || SITE_SUBDOMAIN=$RET
+
+            db_get sendmailanalyzer/site_address || true
+            [ -z "${RET:-}" ] || SITE_ADDRESS=$RET
+
+            db_get sendmailanalyzer/site_username || true
+            [ -z "${RET:-}" ] || SITE_USER=$RET
+
+            db_get sendmailanalyzer/site_lan || true
+            [ -z "${RET:-}" ] || SITE_LAN=$RET
+
+            db_get sendmailanalyzer/site_password || true
+            SITE_PASSWORD=${RET:-}
         fi
-        apache2ctl configtest || return 1
-        if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl reload apache2 || return 1; fi
+
+        if [ "$SITE_ENABLE" = true ] &&
+           [ -x /usr/bin/sa10_site_setup ] &&
+           [ -n "$SITE_DOMAIN" ]; then
+
+            AUTH_PRESENT=0
+
+            if [ -r /etc/apache2/auth/sendmailanalyzer.htpasswd ]; then
+                if awk \
+                    -F: \
+                    -v user="$SITE_USER" \
+                    '$1==user {found=1} END {exit(found ? 0 : 1)}' \
+                    /etc/apache2/auth/sendmailanalyzer.htpasswd; then
+
+                    AUTH_PRESENT=1
+                fi
+            fi
+
+            if [ "$AUTH_PRESENT" -eq 0 ] &&
+               [ -z "$SITE_PASSWORD" ]; then
+
+                printf '%s\n' \
+                    'WARNING: dedicated WAN site not configured because no Basic Auth password was supplied.' \
+                    >&2
+            else
+                if [ -n "$SITE_PASSWORD" ]; then
+                    if [ "$AP_CHANGED" -gt 0 ]; then
+                        SITE_OUT=$(
+                            printf '%s\n' "$SITE_PASSWORD" |
+                            /usr/bin/sa10_site_setup \
+                                --apply \
+                                --domain "$SITE_DOMAIN" \
+                                --subdomain "$SITE_SUBDOMAIN" \
+                                --address "$SITE_ADDRESS" \
+                                --username "$SITE_USER" \
+                                --lan "$SITE_LAN" \
+                                --password-stdin \
+                                --backup-dir "$BACKUP_ROOT/site" \
+                                --force-reload \
+                                2>&1
+                        ) || {
+                            SITE_PASSWORD=''
+
+                            if command -v db_set >/dev/null 2>&1; then
+                                db_set sendmailanalyzer/site_password '' || true
+                            fi
+
+                            printf '%s\n' "$SITE_OUT" >&2
+                            return 1
+                        }
+                    else
+                        SITE_OUT=$(
+                            printf '%s\n' "$SITE_PASSWORD" |
+                            /usr/bin/sa10_site_setup \
+                                --apply \
+                                --domain "$SITE_DOMAIN" \
+                                --subdomain "$SITE_SUBDOMAIN" \
+                                --address "$SITE_ADDRESS" \
+                                --username "$SITE_USER" \
+                                --lan "$SITE_LAN" \
+                                --password-stdin \
+                                --backup-dir "$BACKUP_ROOT/site" \
+                                2>&1
+                        ) || {
+                            SITE_PASSWORD=''
+
+                            if command -v db_set >/dev/null 2>&1; then
+                                db_set sendmailanalyzer/site_password '' || true
+                            fi
+
+                            printf '%s\n' "$SITE_OUT" >&2
+                            return 1
+                        }
+                    fi
+                else
+                    if [ "$AP_CHANGED" -gt 0 ]; then
+                        SITE_OUT=$(
+                            /usr/bin/sa10_site_setup \
+                                --apply \
+                                --domain "$SITE_DOMAIN" \
+                                --subdomain "$SITE_SUBDOMAIN" \
+                                --address "$SITE_ADDRESS" \
+                                --username "$SITE_USER" \
+                                --lan "$SITE_LAN" \
+                                --backup-dir "$BACKUP_ROOT/site" \
+                                --force-reload \
+                                2>&1
+                        ) || {
+                            printf '%s\n' "$SITE_OUT" >&2
+                            return 1
+                        }
+                    else
+                        SITE_OUT=$(
+                            /usr/bin/sa10_site_setup \
+                                --apply \
+                                --domain "$SITE_DOMAIN" \
+                                --subdomain "$SITE_SUBDOMAIN" \
+                                --address "$SITE_ADDRESS" \
+                                --username "$SITE_USER" \
+                                --lan "$SITE_LAN" \
+                                --backup-dir "$BACKUP_ROOT/site" \
+                                2>&1
+                        ) || {
+                            printf '%s\n' "$SITE_OUT" >&2
+                            return 1
+                        }
+                    fi
+                fi
+
+                SITE_RAN=1
+                printf '%s\n' "$SITE_OUT"
+            fi
+        fi
+
+        # Never retain the clear-text site password in shell or Debconf after
+        # the bcrypt htpasswd hash has been created.
+        SITE_PASSWORD=''
+
+        if command -v db_set >/dev/null 2>&1; then
+            db_set sendmailanalyzer/site_password '' || true
+        fi
+
+        # sa10_site_setup validates Apache and reloads it when required. If it
+        # could not run, preserve the previous Apache migration contract.
+        if [ "$SITE_RAN" -eq 0 ] &&
+           [ "$AP_CHANGED" -gt 0 ]; then
+
+            apache2ctl configtest || return 1
+
+            if command -v systemctl >/dev/null 2>&1 &&
+               [ -d /run/systemd/system ]; then
+
+                systemctl reload apache2 || return 1
+            fi
+        fi
     fi
 
     # 10.0.16-11 deliberately does not import, remove or retire any live/backup
@@ -222,7 +395,7 @@ main() {
     if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
     rm -f "$BACKUP_ROOT/.active-preinst-backup"
 
-    printf '%s\n' 'SendmailAnalyzer 10.0.16-18 production upgrade configured successfully.'
+    printf '%s\n' 'SendmailAnalyzer 10.0.16-19 production upgrade configured successfully.'
     printf '%s\n' 'Configuration: /etc/sendmailanalyzer.conf'
     printf '%s\n' 'Configuration help: /usr/share/doc/sendmailanalyzer/CONFIGURATION.md'
     return 0

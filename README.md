@@ -17,6 +17,15 @@ rejected the message.
 
 ## Current revision
 
+`10.0.16-19` adds visual dashboard insights and a transactional dedicated
+reporting-site installer. Fresh installations can publish a host such as
+`reports.example.test`, reuse an existing TLS certificate, create bcrypt
+Basic Auth credentials for WAN access, permit localhost/LAN access directly,
+and manage a compatible local authoritative BIND A record. Manually signed
+static DNSSEC zones are re-signed with their existing keys and verified
+before activation. Existing dedicated sites, certificates and credentials
+are preserved during upgrades.
+
 `10.0.16-18` makes the web interface display the exact installed Debian
 package revision and removes stale version/build-timestamp hard-coding from
 the Debian convenience builder and packaging regression tests.
@@ -176,8 +185,9 @@ apt install ./sendmailanalyzer_VERSION_all.deb
 ```
 
 allows APT to resolve the runtime dependencies, including Perl, DBI/SQLite,
-Plack, URI, ACL and systemd packages. `apache2` and `rsyslog` are recommended
-rather than forced dependencies. See `docs/DEPENDENCIES.md`.
+Plack, URI, ACL and systemd packages. Apache, `apache2-utils`, BIND utilities,
+OpenSSL and rsyslog are recommended for the automatic dedicated-site workflow
+rather than forced core dependencies. See `docs/DEPENDENCIES.md`.
 
 ## Commands
 
@@ -197,6 +207,8 @@ rather than forced dependencies. See `docs/DEPENDENCIES.md`.
 - `sa10_upgrade_from_94` — explicit legacy upgrade helper.
 - `sa10_apache_upgrade` — normalizes existing Apache integration while
   preserving custom routes and `Require` rules.
+- `sa10_site_setup` — transactionally configures a dedicated HTTPS reporting
+  subdomain, TLS reuse, Basic Auth and compatible local BIND/DNSSEC changes.
 - `sa10_retire_94` — explicit legacy retirement helper with rollback backup.
 
 ## Installation and configuration

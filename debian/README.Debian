@@ -31,6 +31,12 @@ Legacy migration policy:
 The PSGI web service listens on 127.0.0.1:9080 by default and is intended to be
 published through a reverse proxy such as Apache.
 
+Interactive Debian installations can configure a dedicated HTTPS reporting
+subdomain, reuse a matching local certificate, create bcrypt Basic Auth for
+WAN clients, allow localhost/LAN access directly, and add an A record to a
+compatible authoritative local BIND zone. Existing site credentials and TLS
+configuration are preserved during upgrades.
+
 Site-local overrides and private header mappings belong in:
 
   /etc/sendmailanalyzer.d/*.conf

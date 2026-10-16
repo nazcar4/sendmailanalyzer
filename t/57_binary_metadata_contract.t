@@ -107,4 +107,29 @@ unlike(
     'canonical Debian build does not mark all bin files executable'
 );
 
+
+like(
+    $builder,
+    qr/debian\/config.*debian\/preinst.*debian\/postinst/s,
+    'convenience builder ships Debconf config with maintainer scripts'
+);
+
+like(
+    $builder,
+    qr/debian\/templates/,
+    'convenience builder ships Debconf templates'
+);
+
+like(
+    $rules,
+    qr/debian\/config.*debian\/preinst.*debian\/postinst/s,
+    'canonical Debian build ships Debconf config with maintainer scripts'
+);
+
+like(
+    $rules,
+    qr/debian\/templates/,
+    'canonical Debian build ships Debconf templates'
+);
+
 done_testing;

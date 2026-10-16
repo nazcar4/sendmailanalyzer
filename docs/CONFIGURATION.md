@@ -95,16 +95,24 @@ Direction is interpreted as:
 
 ## Web interface behind Apache
 
-With Apache as a reverse proxy, keep:
+Keep the PSGI listener private behind the reverse proxy:
 
 ```text
 BIND_HOST 127.0.0.1
 BIND_PORT 9080
 ```
 
-The application validates and understands `X-Forwarded-Prefix`, allowing it to
-be published below a path such as `/reports/` without generating incorrect
-absolute links.
+The preferred Debian deployment uses a dedicated HTTPS VirtualHost such as
+`reports.example.test` and reverse-proxies `/` directly to the PSGI listener.
+Localhost and an optional LAN CIDR can bypass authentication; WAN clients use
+bcrypt-backed Apache Basic Auth.
+
+The application still validates and understands `X-Forwarded-Prefix` for
+administrator-managed legacy or custom path deployments. The package does not
+need that header for its dedicated root-proxy layout.
+
+Reporting-site DNS names, Basic Auth credentials and certificate paths are
+deployment data and are not stored in `/etc/sendmailanalyzer.conf`.
 
 ## Raw retention
 

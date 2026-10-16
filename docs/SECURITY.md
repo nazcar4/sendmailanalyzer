@@ -6,6 +6,16 @@
   configured sources; it does not run the collector as root.
 - The PSGI service binds to `127.0.0.1` by default and is intended to sit behind
   a reverse proxy with explicit access control.
+- The Debian site installer can publish a dedicated HTTPS reporting subdomain.
+  Localhost and an explicitly configured LAN CIDR may bypass authentication;
+  WAN clients require Apache Basic Auth backed by a bcrypt htpasswd hash.
+- Clear-text reporting-site passwords are supplied to `htpasswd` through
+  standard input and cleared from Debconf immediately after use.
+- Automatic WAN publication requires an existing unexpired certificate that
+  OpenSSL verifies against the requested reporting FQDN.
+- Local static BIND changes are transactional. Manually signed DNSSEC zones are
+  re-signed with existing keys and verified before the live zone is replaced.
+  SendmailAnalyzer does not create, rotate or periodically maintain DNSSEC keys.
 - Web responses use a restrictive Content-Security-Policy and security headers;
   the application does not require external JavaScript libraries.
 - SQLite access is parameterized. The web application is read-only.

@@ -1,6 +1,6 @@
 use strict; use warnings; use utf8; use Test::More; use FindBin qw($Bin);
 my $root="$Bin/..";
-for my $f (qw(debian/control debian/changelog debian/rules debian/conffiles debian/postinst debian/prerm debian/postrm debian/copyright debian/README.Debian debian/README.source debian/source/format)) {
+for my $f (qw(debian/control debian/changelog debian/rules debian/conffiles debian/config debian/templates debian/preinst debian/postinst debian/prerm debian/postrm debian/copyright debian/README.Debian debian/README.source debian/source/format)) {
     ok(-f "$root/$f","$f exists");
 }
 open my $cf,'<:encoding(UTF-8)',"$root/debian/control" or die $!; local $/; my $c=<$cf>;

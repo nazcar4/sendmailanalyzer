@@ -1,5 +1,25 @@
 # SendmailAnalyzer 10 changelog
 
+## Debian revision 10.0.16-19 — visual dashboard and dedicated site installer
+
+- Add SVG Mail activity and Message outcome graphics plus visual IP/ASN
+  network activity rankings without external JavaScript dependencies.
+- Add mutually exclusive per-message outcome aggregation for delivered,
+  deferred, rejected and processed messages.
+- Recognize a dedicated Apache root reverse proxy as a complete production
+  integration and prevent stale path-based backups from reviving `/reports/`.
+- Add `sa10_site_setup`, a transactional dedicated-subdomain installer for
+  Apache, TLS certificate reuse, bcrypt Basic Auth and compatible local BIND
+  DNS management.
+- Add Debconf configuration for base domain, reporting label, IPv4 address,
+  WAN username/password and LAN bypass network.
+- Re-sign manually signed static BIND zones with their existing DNSSEC keys
+  and verify the candidate before activation; do not create or rotate keys.
+- Preserve existing reporting VirtualHosts, certificates and authentication
+  hashes during normal upgrades.
+- Update installation, configuration, migration, security, dependency and
+  Debian documentation for the dedicated-subdomain deployment model.
+
 ## Debian revision 10.0.16-18 — dynamic package version branding
 
 - The web header, sidebar credits and footer now display the exact installed

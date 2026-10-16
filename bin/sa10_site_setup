@@ -1,0 +1,1148 @@
+#!/bin/sh
+#
+# SendmailAnalyzer dedicated reporting-site setup.
+#
+# This helper can:
+#   - publish reports.<domain> through Apache;
+#   - reuse an existing TLS certificate that covers the FQDN;
+#   - create/preserve bcrypt Basic Auth credentials;
+#   - allow localhost and an optional LAN CIDR without authentication;
+#   - add an A record to a local static authoritative BIND zone;
+#   - re-sign a manually signed DNSSEC zone with its existing keys.
+#
+# It does NOT create or rotate DNSSEC keys and does NOT install DNSSEC cron jobs.
+#
+
+APPLY=0
+PASSWORD_STDIN=0
+FORCE_RELOAD=0
+
+DOMAIN=''
+SUBDOMAIN='reports'
+ADDRESS=''
+USERNAME='sendmailreports'
+LAN=''
+BACKUP_DIR=''
+SITE_PASSWORD=''
+
+AUTH_FILE="${SENDMAILANALYZER_AUTH_FILE:-/etc/apache2/auth/sendmailanalyzer.htpasswd}"
+APACHE_AVAILABLE="${SENDMAILANALYZER_APACHE_SITES_AVAILABLE:-/etc/apache2/sites-available}"
+APACHE_ENABLED="${SENDMAILANALYZER_APACHE_SITES_ENABLED:-/etc/apache2/sites-enabled}"
+APACHE_CONF_ENABLED="${SENDMAILANALYZER_APACHE_CONF_ENABLED:-/etc/apache2/conf-enabled}"
+LE_LIVE="${SENDMAILANALYZER_LETSENCRYPT_LIVE:-/etc/letsencrypt/live}"
+BIND_CONF_LOCAL="${SENDMAILANALYZER_BIND_CONF_LOCAL:-/etc/bind/named.conf.local}"
+
+FQDN=''
+SITE_FILE=''
+ZONE_FILE=''
+ZONE_WORK=''
+ZONE_SIGNED=''
+DSSET_FILE=''
+
+COMMITTED=0
+DNS_CHANGED=0
+APACHE_CHANGED=0
+AUTH_CHANGED=0
+
+DNS_TOUCHED=0
+AUTH_TOUCHED=0
+SITE_TOUCHED=0
+SITE_WAS_PRESENT=0
+SITE_WAS_ENABLED=0
+OLD_CONF_WAS_ENABLED=0
+DSSET_TOUCHED=0
+
+log()
+{
+    printf '%s\n' "$*"
+}
+
+fail()
+{
+    printf 'ERROR: %s\n' "$*" >&2
+    return 1
+}
+
+usage()
+{
+    cat <<'__USAGE__'
+Usage:
+  sa10_site_setup --apply --domain DOMAIN [options]
+
+Options:
+  --subdomain NAME       Reporting label (default: reports)
+  --address IPv4         IPv4 address for the A record
+  --username USER        Basic Auth username (default: sendmailreports)
+  --lan CIDR             LAN allowed without Basic Auth
+  --password-stdin       Read a new Basic Auth password from stdin
+  --backup-dir PATH      Transaction backup directory
+  --force-reload         Force an Apache reload after validation
+  --help                 Show this help
+__USAGE__
+}
+
+cleanup_temp()
+{
+    [ -z "$ZONE_WORK" ] || rm -f "$ZONE_WORK"
+    [ -z "$ZONE_SIGNED" ] || rm -f "$ZONE_SIGNED"
+}
+
+rollback()
+{
+    [ "$COMMITTED" -eq 1 ] && {
+        cleanup_temp
+        return 0
+    }
+
+    if [ "$SITE_TOUCHED" -eq 1 ]; then
+        if [ "$SITE_WAS_PRESENT" -eq 1 ] &&
+           [ -f "$BACKUP_DIR/apache-site.original" ]; then
+            cp -a "$BACKUP_DIR/apache-site.original" "$SITE_FILE" \
+                >/dev/null 2>&1 || true
+        else
+            rm -f "$SITE_FILE" >/dev/null 2>&1 || true
+        fi
+
+        if [ "$SITE_WAS_ENABLED" -eq 0 ]; then
+            rm -f "$APACHE_ENABLED/$FQDN.conf" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if [ "$OLD_CONF_WAS_ENABLED" -eq 1 ] &&
+       command -v a2enconf >/dev/null 2>&1; then
+        a2enconf sendmailanalyzer >/dev/null 2>&1 || true
+    fi
+
+    if [ "$AUTH_TOUCHED" -eq 1 ]; then
+        if [ -f "$BACKUP_DIR/auth.original" ]; then
+            cp -a "$BACKUP_DIR/auth.original" "$AUTH_FILE" \
+                >/dev/null 2>&1 || true
+        else
+            rm -f "$AUTH_FILE" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if [ "$DNS_TOUCHED" -eq 1 ] &&
+       [ -n "$ZONE_FILE" ] &&
+       [ -f "$BACKUP_DIR/zone.original" ]; then
+
+        cp -a "$BACKUP_DIR/zone.original" "$ZONE_FILE" \
+            >/dev/null 2>&1 || true
+
+        if [ "$DSSET_TOUCHED" -eq 1 ] && [ -n "$DSSET_FILE" ]; then
+            if [ -f "$BACKUP_DIR/dsset.original" ]; then
+                cp -a "$BACKUP_DIR/dsset.original" "$DSSET_FILE" \
+                    >/dev/null 2>&1 || true
+            else
+                rm -f "$DSSET_FILE" >/dev/null 2>&1 || true
+            fi
+        fi
+
+        if command -v rndc >/dev/null 2>&1; then
+            rndc reload "$DOMAIN" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if command -v apache2ctl >/dev/null 2>&1; then
+        apache2ctl configtest >/dev/null 2>&1 || true
+
+        if command -v systemctl >/dev/null 2>&1 &&
+           [ -d /run/systemd/system ]; then
+            systemctl reload apache2 >/dev/null 2>&1 || true
+        fi
+    fi
+
+    cleanup_temp
+    return 0
+}
+
+find_zone_file()
+{
+    [ -r "$BIND_CONF_LOCAL" ] || return 0
+
+    perl -0777 -e '
+        use strict;
+        use warnings;
+
+        my ($file,$zone)=@ARGV;
+
+        open my $fh,"<",$file or exit 0;
+        local $/;
+        my $text=<$fh>;
+
+        if ($text =~ /zone\s+"\Q$zone\E"\s*\{(.*?)\};/si) {
+            my $body=$1;
+
+            if (
+                $body =~ /\btype\s+(?:master|primary)\s*;/i &&
+                $body =~ /\bfile\s+"([^"]+)"\s*;/i
+            ) {
+                print $1;
+            }
+        }
+    ' "$BIND_CONF_LOCAL" "$DOMAIN"
+}
+
+zone_is_dynamic_or_inline()
+{
+    [ -r "$BIND_CONF_LOCAL" ] || return 1
+
+    perl -0777 -e '
+        use strict;
+        use warnings;
+
+        my ($file,$zone)=@ARGV;
+
+        open my $fh,"<",$file or exit 1;
+        local $/;
+        my $text=<$fh>;
+
+        exit 1 unless
+            $text =~ /zone\s+"\Q$zone\E"\s*\{(.*?)\};/si;
+
+        my $body=$1;
+
+        exit(
+            $body =~ /\b(?:update-policy|allow-update|dnssec-policy)\b/i ||
+            $body =~ /\binline-signing\s+yes\s*;/i
+                ? 0
+                : 1
+        );
+    ' "$BIND_CONF_LOCAL" "$DOMAIN"
+}
+
+zone_existing_a()
+{
+    awk \
+        -v fqdn="$FQDN." \
+        -v short="$SUBDOMAIN" '
+        {
+            name=tolower($1)
+
+            if (name != tolower(fqdn) &&
+                name != tolower(short)) {
+                next
+            }
+
+            for (i=2; i<=NF-2; i++) {
+                if (toupper($i) == "IN" &&
+                    toupper($(i+1)) == "A") {
+                    print $(i+2)
+                    exit
+                }
+            }
+        }
+    ' "$ZONE_FILE"
+}
+
+prepare_zone_with_record()
+{
+    perl -0777 -e '
+        use strict;
+        use warnings;
+
+        my ($fqdn,$ip)=@ARGV;
+        local $/;
+        my $text=<STDIN>;
+
+        my $bumped = (
+            $text =~ s{
+                (\bSOA\b[^(]*\(\s*)
+                (\d+)
+            }{
+                $1 . ($2 + 1)
+            }ex
+        );
+
+        die "SOA serial not found\n" unless $bumped;
+
+        my $rr="$fqdn.\tIN\tA\t$ip\n";
+
+        if (
+            $text =~
+            /^(?=[^\n]*\sIN\s+(?:DNSKEY|RRSIG|NSEC3PARAM|NSEC3)\b)/m
+        ) {
+            $text =~ s{
+                (?=^[^\n]*\sIN\s+(?:DNSKEY|RRSIG|NSEC3PARAM|NSEC3)\b)
+            }{$rr}mx;
+        }
+        else {
+            $text .= "\n" unless $text =~ /\n\z/;
+            $text .= $rr;
+        }
+
+        print $text;
+    ' "$FQDN" "$ADDRESS" < "$ZONE_FILE" > "$ZONE_WORK"
+}
+
+configure_dns()
+{
+    ZONE_FILE=$(find_zone_file)
+
+    if [ -z "$ZONE_FILE" ]; then
+        log "DNS: no local authoritative BIND zone detected for $DOMAIN."
+
+        if [ -n "$ADDRESS" ]; then
+            log "DNS: create externally: $FQDN. IN A $ADDRESS"
+        fi
+
+        return 0
+    fi
+
+    case "$ZONE_FILE" in
+        /*)
+            ;;
+        *)
+            log "DNS: relative zone path '$ZONE_FILE' is not modified automatically."
+            ZONE_FILE=''
+            return 0
+            ;;
+    esac
+
+    [ -r "$ZONE_FILE" ] || {
+        fail "BIND zone file is unreadable: $ZONE_FILE"
+        return 1
+    }
+
+    if zone_is_dynamic_or_inline; then
+        log "DNS: dynamic/inline-managed zone detected; direct file editing skipped."
+        ZONE_FILE=''
+        return 0
+    fi
+
+    [ -n "$ADDRESS" ] || {
+        fail "local BIND zone detected but no IPv4 address is available"
+        return 1
+    }
+
+    existing=$(zone_existing_a)
+
+    if [ -n "$existing" ]; then
+        if [ "$existing" = "$ADDRESS" ]; then
+            log "DNS: existing A record preserved: $FQDN -> $ADDRESS"
+            return 0
+        fi
+
+        fail "existing A record for $FQDN points to $existing; refusing overwrite"
+        return 1
+    fi
+
+    command -v named-checkzone >/dev/null 2>&1 || {
+        fail 'named-checkzone is required for local BIND changes'
+        return 1
+    }
+
+    cp -a "$ZONE_FILE" "$BACKUP_DIR/zone.original" || return 1
+    DNS_TOUCHED=1
+
+    zone_dir=$(dirname "$ZONE_FILE")
+
+    ZONE_WORK=$(mktemp "$zone_dir/.sa10-zone.XXXXXX") || return 1
+    ZONE_SIGNED=$(mktemp "$zone_dir/.sa10-signed.XXXXXX") || return 1
+
+    prepare_zone_with_record || {
+        fail 'cannot construct candidate BIND zone'
+        return 1
+    }
+
+    named-checkzone "$DOMAIN" "$ZONE_WORK" >/dev/null 2>&1 || {
+        fail 'candidate BIND zone failed named-checkzone'
+        return 1
+    }
+
+    candidate="$ZONE_WORK"
+
+    has_rrsig=0
+    has_dnskey=0
+    dnssec_mode=''
+
+    grep -Eq '[[:space:]]RRSIG[[:space:]]' "$ZONE_FILE" &&
+        has_rrsig=1
+
+    grep -Eq '[[:space:]]DNSKEY[[:space:]]' "$ZONE_FILE" &&
+        has_dnskey=1
+
+    if [ "$has_dnskey" -eq 1 ] && [ "$has_rrsig" -eq 0 ]; then
+        fail 'DNSKEY records exist without RRSIG records; refusing automatic signing'
+        return 1
+    fi
+
+    if [ "$has_rrsig" -eq 1 ]; then
+        if grep -Eq             '[[:space:]](NSEC3PARAM|NSEC3)[[:space:]]'             "$ZONE_FILE"; then
+
+            dnssec_mode='nsec3'
+
+        elif grep -Eq             '[[:space:]]NSEC[[:space:]]'             "$ZONE_FILE"; then
+
+            dnssec_mode='nsec'
+
+        else
+            fail 'signed zone denial-of-existence mode is unknown; refusing automatic signing'
+            return 1
+        fi
+        command -v dnssec-signzone >/dev/null 2>&1 || {
+            fail 'dnssec-signzone is required for this signed zone'
+            return 1
+        }
+
+        command -v dnssec-verify >/dev/null 2>&1 || {
+            fail 'dnssec-verify is required for this signed zone'
+            return 1
+        }
+
+        key_count=$(
+            find "$zone_dir" \
+                -maxdepth 1 \
+                -type f \
+                -name "K${DOMAIN}.+*.private" \
+                2>/dev/null |
+            wc -l
+        )
+
+        [ "$key_count" -ge 1 ] || {
+            fail "signed zone has no private DNSSEC keys in $zone_dir"
+            return 1
+        }
+
+        if pgrep -af dnssec-signzone 2>/dev/null |
+           grep -F -- "$DOMAIN" >/dev/null 2>&1; then
+            fail "another dnssec-signzone process appears to be handling $DOMAIN"
+            return 1
+        fi
+
+        DSSET_FILE="$zone_dir/dsset-$DOMAIN."
+
+        if [ -e "$DSSET_FILE" ]; then
+            cp -a "$DSSET_FILE" "$BACKUP_DIR/dsset.original" ||
+                return 1
+        fi
+
+        DSSET_TOUCHED=1
+
+        log "DNSSEC: signing $DOMAIN with the existing keys ($dnssec_mode)."
+
+        (
+            cd "$zone_dir" || return 1
+
+            case "$dnssec_mode" in
+                nsec3)
+                    dnssec-signzone \
+                        -o "$DOMAIN" \
+                        -3 - \
+                        -H 0 \
+                        -u \
+                        -f "$ZONE_SIGNED" \
+                        "$ZONE_WORK"
+                    ;;
+
+                nsec)
+                    dnssec-signzone \
+                        -o "$DOMAIN" \
+                        -u \
+                        -f "$ZONE_SIGNED" \
+                        "$ZONE_WORK"
+                    ;;
+
+                *)
+                    exit 1
+                    ;;
+            esac
+        ) >/dev/null 2>&1 || {
+            fail "dnssec-signzone failed for $DOMAIN"
+            return 1
+        }
+
+        dnssec-verify \
+            -o "$DOMAIN" \
+            "$ZONE_SIGNED" \
+            >/dev/null 2>&1 || {
+                fail 'dnssec-verify rejected the candidate signed zone'
+                return 1
+            }
+
+        candidate="$ZONE_SIGNED"
+    fi
+
+    named-checkzone "$DOMAIN" "$candidate" >/dev/null 2>&1 || {
+        fail 'final BIND zone failed named-checkzone'
+        return 1
+    }
+
+    new_zone="$ZONE_FILE.sa10-new.$$"
+
+    cp "$candidate" "$new_zone" || return 1
+
+    chown --reference="$ZONE_FILE" "$new_zone" || {
+        rm -f "$new_zone"
+        return 1
+    }
+
+    chmod --reference="$ZONE_FILE" "$new_zone" || {
+        rm -f "$new_zone"
+        return 1
+    }
+
+    mv -f "$new_zone" "$ZONE_FILE" || return 1
+    DNS_CHANGED=1
+
+    if command -v rndc >/dev/null 2>&1; then
+        rndc reload "$DOMAIN" >/dev/null 2>&1 || {
+            fail "rndc reload $DOMAIN failed"
+            return 1
+        }
+    fi
+
+    if command -v dig >/dev/null 2>&1; then
+        served=$(
+            dig \
+                @127.0.0.1 \
+                "$FQDN" \
+                A \
+                +short \
+                2>/dev/null |
+            awk 'NF {print; exit}'
+        )
+
+        [ "$served" = "$ADDRESS" ] || {
+            fail "local DNS verification failed for $FQDN"
+            return 1
+        }
+
+        if [ "$has_rrsig" -eq 1 ]; then
+            dig \
+                @127.0.0.1 \
+                "$FQDN" \
+                A \
+                +dnssec \
+                2>/dev/null |
+            grep -Eq '[[:space:]]RRSIG[[:space:]]+A[[:space:]]' || {
+                fail "DNSSEC verification of $FQDN failed after reload"
+                return 1
+            }
+        fi
+    fi
+
+    log "DNS: installed $FQDN -> $ADDRESS"
+    return 0
+}
+
+cert_valid_for_fqdn()
+{
+    cert=$1
+    key=$2
+
+    [ -r "$cert" ] || return 1
+    [ -r "$key" ] || return 1
+
+    openssl \
+        x509 \
+        -in "$cert" \
+        -noout \
+        -checkend 0 \
+        >/dev/null 2>&1 || return 1
+
+    openssl \
+        x509 \
+        -in "$cert" \
+        -noout \
+        -checkhost "$FQDN" \
+        >/dev/null 2>&1 || return 1
+
+    return 0
+}
+
+cert_has_preferred_wildcard()
+{
+    cert=$1
+
+    openssl \
+        x509 \
+        -in "$cert" \
+        -noout \
+        -ext subjectAltName \
+        2>/dev/null |
+        tr ',' '\n' |
+        sed \
+            -e 's/^[[:space:]]*//' \
+            -e 's/^DNS://' \
+            -e 's/[[:space:]]*$//' |
+        grep -Fx -- "*.$DOMAIN" \
+        >/dev/null 2>&1
+}
+
+select_certificate()
+{
+    best_cert=''
+    best_key=''
+    best_epoch=0
+    best_wildcard=-1
+
+    if [ -r "$SITE_FILE" ]; then
+        existing_cert=$(
+            awk '$1=="SSLCertificateFile" {print $2; exit}' "$SITE_FILE"
+        )
+
+        existing_key=$(
+            awk '$1=="SSLCertificateKeyFile" {print $2; exit}' "$SITE_FILE"
+        )
+
+        if [ -n "$existing_cert" ] &&
+           [ -n "$existing_key" ] &&
+           cert_valid_for_fqdn "$existing_cert" "$existing_key"; then
+
+            printf '%s|%s\n' "$existing_cert" "$existing_key"
+            return 0
+        fi
+    fi
+
+    for cert in "$LE_LIVE"/*/fullchain.pem; do
+        [ -r "$cert" ] || continue
+
+        key="$(dirname "$cert")/privkey.pem"
+
+        cert_valid_for_fqdn "$cert" "$key" || continue
+
+        not_after=$(
+            openssl \
+                x509 \
+                -in "$cert" \
+                -noout \
+                -enddate \
+                2>/dev/null |
+            sed 's/^notAfter=//'
+        )
+
+        epoch=$(date -d "$not_after" +%s 2>/dev/null || printf '0')
+
+        wildcard=0
+
+        if cert_has_preferred_wildcard "$cert"; then
+            wildcard=1
+        fi
+
+        if [ "$wildcard" -gt "$best_wildcard" ] ||
+           {
+               [ "$wildcard" -eq "$best_wildcard" ] &&
+               [ "$epoch" -gt "$best_epoch" ]
+           }; then
+
+            best_wildcard=$wildcard
+            best_epoch=$epoch
+            best_cert=$cert
+            best_key=$key
+        fi
+    done
+
+    [ -n "$best_cert" ] || return 1
+
+    printf '%s|%s\n' "$best_cert" "$best_key"
+    return 0
+}
+
+auth_user_exists()
+{
+    [ -r "$AUTH_FILE" ] || return 1
+
+    awk \
+        -F: \
+        -v user="$USERNAME" \
+        '$1==user {found=1} END {exit(found ? 0 : 1)}' \
+        "$AUTH_FILE"
+}
+
+configure_auth()
+{
+    if auth_user_exists; then
+        log "Auth: existing user '$USERNAME' preserved."
+        SITE_PASSWORD=''
+        return 0
+    fi
+
+    [ -n "$SITE_PASSWORD" ] || {
+        fail "no password supplied for new Basic Auth user '$USERNAME'"
+        return 1
+    }
+
+    command -v htpasswd >/dev/null 2>&1 || {
+        fail 'htpasswd is required (apache2-utils)'
+        return 1
+    }
+
+    mkdir -p "$(dirname "$AUTH_FILE")" || return 1
+
+    if [ -e "$AUTH_FILE" ]; then
+        cp -a "$AUTH_FILE" "$BACKUP_DIR/auth.original" || return 1
+    fi
+
+    AUTH_TOUCHED=1
+
+    if [ -e "$AUTH_FILE" ]; then
+        printf '%s\n' "$SITE_PASSWORD" |
+            htpasswd \
+                -B \
+                -i \
+                "$AUTH_FILE" \
+                "$USERNAME" \
+                >/dev/null || return 1
+    else
+        printf '%s\n' "$SITE_PASSWORD" |
+            htpasswd \
+                -B \
+                -i \
+                -c \
+                "$AUTH_FILE" \
+                "$USERNAME" \
+                >/dev/null || return 1
+    fi
+
+    web_group=root
+
+    if getent group www-data >/dev/null 2>&1; then
+        web_group=www-data
+    fi
+
+    chown root:"$web_group" "$AUTH_FILE" || return 1
+    chmod 0640 "$AUTH_FILE" || return 1
+
+    AUTH_CHANGED=1
+    SITE_PASSWORD=''
+
+    log "Auth: created Basic Auth user '$USERNAME'."
+    return 0
+}
+
+write_managed_site()
+{
+    cert=$1
+    key=$2
+
+    if [ -n "$LAN" ]; then
+        require_ip="            Require ip 127.0.0.1 ::1 $LAN"
+    else
+        require_ip="            Require ip 127.0.0.1 ::1"
+    fi
+
+    cat > "$SITE_FILE" <<__APACHE_SITE__
+# Managed by SendmailAnalyzer - dedicated web site
+<VirtualHost *:80>
+    ServerName $FQDN
+
+    RewriteEngine On
+    RewriteRule ^ https://$FQDN%{REQUEST_URI} [R=301,L,NE]
+
+    ErrorLog \${APACHE_LOG_DIR}/$FQDN-error.log
+    CustomLog \${APACHE_LOG_DIR}/$FQDN-access.log combined
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName $FQDN
+
+    SSLEngine on
+    SSLCertificateFile $cert
+    SSLCertificateKeyFile $key
+
+    ProxyPreserveHost On
+    ProxyRequests Off
+
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Port "443"
+
+    ProxyPass        / http://127.0.0.1:9080/
+    ProxyPassReverse / http://127.0.0.1:9080/
+
+    <Location />
+        AuthType Basic
+        AuthName "SendmailAnalyzer - Protected access"
+        AuthBasicProvider file
+        AuthUserFile $AUTH_FILE
+
+        <RequireAny>
+$require_ip
+            Require user $USERNAME
+        </RequireAny>
+    </Location>
+
+    ErrorLog \${APACHE_LOG_DIR}/$FQDN-error.log
+    CustomLog \${APACHE_LOG_DIR}/$FQDN-access.log combined
+
+    Header always set Strict-Transport-Security "max-age=31536000"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set X-Frame-Options "SAMEORIGIN"
+</VirtualHost>
+__APACHE_SITE__
+
+    return $?
+}
+
+enable_module_if_needed()
+{
+    module=$1
+
+    if command -v a2query >/dev/null 2>&1 &&
+       a2query -m "$module" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    a2enmod "$module" >/dev/null 2>&1 || return 1
+
+    APACHE_CHANGED=1
+    return 0
+}
+
+configure_apache()
+{
+    command -v apache2ctl >/dev/null 2>&1 || {
+        log 'Apache: not installed; dedicated web site not configured.'
+        return 0
+    }
+
+    command -v openssl >/dev/null 2>&1 || {
+        fail 'openssl is required for TLS certificate validation'
+        return 1
+    }
+
+    command -v a2enmod >/dev/null 2>&1 || {
+        fail 'a2enmod is required'
+        return 1
+    }
+
+    command -v a2ensite >/dev/null 2>&1 || {
+        fail 'a2ensite is required'
+        return 1
+    }
+
+    cert_pair=$(select_certificate) || {
+        log "WARNING: Apache dedicated WAN site skipped because no unexpired local TLS certificate covers $FQDN."
+
+        if [ "$FORCE_RELOAD" -eq 1 ]; then
+            apache2ctl configtest >/dev/null || {
+                fail 'Apache configuration validation failed'
+                return 1
+            }
+
+            if command -v systemctl >/dev/null 2>&1 &&
+               [ -d /run/systemd/system ]; then
+
+                systemctl reload apache2 || {
+                    fail 'Apache reload failed'
+                    return 1
+                }
+            fi
+        fi
+
+        return 0
+    }
+
+    CERT_FILE=${cert_pair%%|*}
+    KEY_FILE=${cert_pair#*|}
+
+    configure_auth || return 1
+    configure_dns || return 1
+
+    mkdir -p "$APACHE_AVAILABLE" "$APACHE_ENABLED" || return 1
+
+    if [ -e "$SITE_FILE" ]; then
+        SITE_WAS_PRESENT=1
+
+        cp -a \
+            "$SITE_FILE" \
+            "$BACKUP_DIR/apache-site.original" ||
+            return 1
+
+        if grep -Eq \
+            '^[[:space:]]*ProxyPass[[:space:]]+/[[:space:]]+http://127\.0\.0\.1:9080/[[:space:]]*$' \
+            "$SITE_FILE"; then
+
+            if grep -Eq \
+                '^[[:space:]]*AuthType[[:space:]]+Basic[[:space:]]*$' \
+                "$SITE_FILE" &&
+               grep -Eq \
+                "^[[:space:]]*Require[[:space:]]+user[[:space:]]+$USERNAME([[:space:]]|$)" \
+                "$SITE_FILE"; then
+
+                log "Apache: existing dedicated root vhost preserved: $SITE_FILE"
+
+            elif grep -q \
+                '^# Managed by SendmailAnalyzer - dedicated web site$' \
+                "$SITE_FILE"; then
+
+                SITE_TOUCHED=1
+                write_managed_site "$CERT_FILE" "$KEY_FILE" || return 1
+                APACHE_CHANGED=1
+
+            else
+                fail 'existing root vhost lacks the requested authentication policy; refusing overwrite'
+                return 1
+            fi
+        else
+            fail "existing site is not a SendmailAnalyzer root reverse proxy: $SITE_FILE"
+            return 1
+        fi
+    else
+        SITE_TOUCHED=1
+
+        write_managed_site "$CERT_FILE" "$KEY_FILE" || return 1
+        chmod 0644 "$SITE_FILE" || return 1
+
+        APACHE_CHANGED=1
+    fi
+
+    for module in \
+        ssl \
+        rewrite \
+        proxy \
+        proxy_http \
+        headers \
+        auth_basic \
+        authn_file \
+        authz_user
+    do
+        enable_module_if_needed "$module" || {
+            fail "cannot enable Apache module $module"
+            return 1
+        }
+    done
+
+    if [ -L "$APACHE_ENABLED/$FQDN.conf" ]; then
+        SITE_WAS_ENABLED=1
+    else
+        a2ensite "$FQDN.conf" >/dev/null 2>&1 || return 1
+        APACHE_CHANGED=1
+    fi
+
+    if [ -L "$APACHE_CONF_ENABLED/sendmailanalyzer.conf" ]; then
+        OLD_CONF_WAS_ENABLED=1
+
+        if command -v a2disconf >/dev/null 2>&1; then
+            a2disconf sendmailanalyzer >/dev/null 2>&1 || return 1
+            APACHE_CHANGED=1
+        fi
+    fi
+
+    apache2ctl configtest >/dev/null || {
+        fail 'Apache configuration validation failed'
+        return 1
+    }
+
+    if [ "$APACHE_CHANGED" -gt 0 ] ||
+       [ "$FORCE_RELOAD" -eq 1 ]; then
+
+        if command -v systemctl >/dev/null 2>&1 &&
+           [ -d /run/systemd/system ]; then
+
+            systemctl reload apache2 || {
+                fail 'Apache reload failed'
+                return 1
+            }
+        fi
+    fi
+
+    log "Apache: dedicated site ready at https://$FQDN/"
+    log "TLS: $CERT_FILE"
+
+    return 0
+}
+
+main()
+{
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --apply)
+                APPLY=1
+                ;;
+
+            --domain)
+                shift
+                DOMAIN=${1:-}
+                ;;
+
+            --subdomain)
+                shift
+                SUBDOMAIN=${1:-}
+                ;;
+
+            --address)
+                shift
+                ADDRESS=${1:-}
+                ;;
+
+            --username)
+                shift
+                USERNAME=${1:-}
+                ;;
+
+            --lan)
+                shift
+                LAN=${1:-}
+                ;;
+
+            --password-stdin)
+                PASSWORD_STDIN=1
+                ;;
+
+            --backup-dir)
+                shift
+                BACKUP_DIR=${1:-}
+                ;;
+
+            --force-reload)
+                FORCE_RELOAD=1
+                ;;
+
+            --help|-h)
+                usage
+                return 0
+                ;;
+
+            *)
+                fail "unknown option: $1"
+                return 2
+                ;;
+        esac
+
+        shift
+    done
+
+    [ "$APPLY" -eq 1 ] || {
+        fail '--apply is required'
+        return 2
+    }
+
+    [ "$(id -u)" -eq 0 ] || {
+        fail 'must run as root'
+        return 1
+    }
+
+    printf '%s\n' "$DOMAIN" |
+        grep -Eq \
+        '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$' || {
+            fail "invalid base domain: $DOMAIN"
+            return 1
+        }
+
+    printf '%s\n' "$SUBDOMAIN" |
+        grep -Eq \
+        '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$' || {
+            fail "invalid subdomain label: $SUBDOMAIN"
+            return 1
+        }
+
+    printf '%s\n' "$USERNAME" |
+        grep -Eq '^[A-Za-z0-9._-]+$' || {
+            fail 'invalid Basic Auth username'
+            return 1
+        }
+
+    FQDN="${SUBDOMAIN}.${DOMAIN}"
+    SITE_FILE="$APACHE_AVAILABLE/$FQDN.conf"
+
+    if [ -z "$ADDRESS" ] &&
+       command -v getent >/dev/null 2>&1; then
+
+        ADDRESS=$(
+            getent ahostsv4 "$DOMAIN" 2>/dev/null |
+            awk '
+                $1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {
+                    print $1
+                    exit
+                }
+            '
+        )
+    fi
+
+    if [ -n "$ADDRESS" ]; then
+        perl -e '
+            use strict;
+            use warnings;
+
+            my $ip = shift // q{};
+            my @octets = split /\./, $ip, -1;
+
+            exit 1 unless @octets == 4;
+
+            for my $octet (@octets) {
+                exit 1 unless $octet =~ /\A[0-9]+\z/;
+                exit 1 if $octet > 255;
+            }
+
+            exit 0;
+        ' "$ADDRESS" || {
+            fail "invalid IPv4 address: $ADDRESS"
+            return 1
+        }
+    fi
+
+    if [ -z "$LAN" ] &&
+       command -v ip >/dev/null 2>&1; then
+
+        LAN=$(
+            ip -o -4 route show scope link 2>/dev/null |
+            awk '
+                $1 != "default" &&
+                $1 ~ /\// &&
+                $1 !~ /^127\./ {
+                    print $1
+                    exit
+                }
+            '
+        )
+    fi
+
+    if [ -n "$LAN" ]; then
+        printf '%s\n' "$LAN" |
+            grep -Eq \
+            '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' || {
+                fail "invalid LAN CIDR: $LAN"
+                return 1
+            }
+    fi
+
+    if [ "$PASSWORD_STDIN" -eq 1 ]; then
+        IFS= read -r SITE_PASSWORD || SITE_PASSWORD=''
+    fi
+
+    if [ -z "$BACKUP_DIR" ]; then
+        BACKUP_DIR="/var/backups/sendmailanalyzer/site-$(date +%Y%m%d-%H%M%S)"
+    fi
+
+    mkdir -p "$BACKUP_DIR" || {
+        fail "cannot create backup directory $BACKUP_DIR"
+        return 1
+    }
+
+    chmod 0700 "$BACKUP_DIR" 2>/dev/null || true
+
+    trap rollback 0
+
+    configure_apache
+    rc=$?
+
+    SITE_PASSWORD=''
+
+    if [ "$rc" -eq 0 ]; then
+        COMMITTED=1
+        cleanup_temp
+        trap - 0
+
+        changed=0
+
+        if [ "$APACHE_CHANGED" -gt 0 ] ||
+           [ "$DNS_CHANGED" -gt 0 ] ||
+           [ "$AUTH_CHANGED" -gt 0 ]; then
+            changed=1
+        fi
+
+        printf \
+            'Site setup changed=%d apache_changed=%d dns_changed=%d auth_changed=%d fqdn=%s\n' \
+            "$changed" \
+            "$APACHE_CHANGED" \
+            "$DNS_CHANGED" \
+            "$AUTH_CHANGED" \
+            "$FQDN"
+    fi
+
+    return "$rc"
+}
+
+main "$@"

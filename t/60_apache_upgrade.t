@@ -35,6 +35,14 @@ is($after,$before,'Apache migration is byte-idempotent on second run');
 like($out2,qr/changed=0 configured=2/,'already-correct v10 proxies are detected instead of triggering fresh package config');
 
 my $post=do { local $/; open my $ph,'<',"$root/debian/postinst" or die $!; <$ph> };
-like($post,qr/AP_CONFIGURED/,'postinst distinguishes already-configured Apache from no integration');
-like($post,qr/if \[ "\$AP_CONFIGURED" -eq 0 \]/,'fresh package config is added only when no integration exists');
+like(
+    $post,
+    qr/sa10_site_setup/,
+    'postinst delegates dedicated reporting-site setup to sa10_site_setup'
+);
+unlike(
+    $post,
+    qr/if \[ "\$AP_CONFIGURED" -eq 0 \]/,
+    'postinst no longer installs the legacy fresh /reports path fallback'
+);
 done_testing;

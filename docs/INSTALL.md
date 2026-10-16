@@ -41,12 +41,17 @@ Final installations do not use `sendmailanalyzer10` runtime paths.
 6. Runs `sa10_selftest` and SQLite `PRAGMA quick_check`.
 7. On a running systemd host, enables and starts/restarts only the
    SendmailAnalyzer collector and web services.
-8. If Apache is installed and SendmailAnalyzer integration already exists,
-   migrates/normalizes that integration, preserves custom route/`Require` rules,
-   runs `apache2ctl configtest`, and performs only an Apache reload when the
-   configuration changed.
-9. On validation failure, attempts to restore the previous v10 SQLite snapshot
-   and prior SendmailAnalyzer service state.
+8. If Apache is available, offers a dedicated HTTPS reporting host such as
+   `reports.example.test` instead of creating a fresh `/reports/` path proxy.
+9. Reuses an existing unexpired TLS certificate that covers the reporting
+   FQDN, creates bcrypt Basic Auth credentials for WAN clients, and permits
+   localhost plus one configured LAN CIDR without authentication.
+10. If the selected base domain is an authoritative local static BIND zone,
+    adds the A record transactionally. A manually signed DNSSEC zone is
+    re-signed with its existing keys and validated before activation.
+11. Runs `apache2ctl configtest` and reloads Apache only when required.
+12. On validation failure, attempts to restore the previous v10 SQLite
+    snapshot, reporting-site files and prior SendmailAnalyzer service state.
 
 Current package revisions **do not automatically import or retire
 SendmailAnalyzer 9.4**. Legacy migration tools are explicit/manual only.
@@ -78,14 +83,45 @@ runuser -u sendmailanalyzer -- /usr/bin/sa10_db \
 On a production system the expected results are `enabled`, `active`,
 `RESULT: PASS`, and SQLite `ok`.
 
-## Apache
+## Dedicated HTTPS reporting site
 
-`/reports/` is the recommended route. Package migration logic preserves an
-existing custom route when appropriate and preserves `Require` access rules per
-HTTP/HTTPS VirtualHost. Deprecated `/sareport/` or temporary `/sareport10/`
-routes are not recreated when `/reports/` is already the active route.
+The preferred production layout is a dedicated host such as
+`reports.example.test`, reverse-proxied at `/` to `127.0.0.1:9080`.
 
-A secure example configuration using `Require local` is installed as:
+During an interactive Debian installation the package asks for the existing
+base domain, reporting label, IPv4 address, Basic Auth username/password and
+optional LAN CIDR. An existing dedicated root-proxy installation is detected
+and preserved, including its certificate and existing authentication hash.
+
+Localhost and the configured LAN can access the reporting site directly.
+Other clients must authenticate through Apache Basic Auth. The clear-text
+password is supplied to `htpasswd -B -i` through standard input and cleared
+from Debconf after use; only the bcrypt htpasswd hash remains on disk.
+
+The installer reuses an already-present unexpired certificate only when
+OpenSSL verifies that it covers the requested FQDN. It does not expose Basic
+Auth credentials over an automatically generated plain-HTTP reporting site.
+
+When the base domain is an authoritative local static BIND zone, the installer
+can create the A record. For manually signed static DNSSEC zones it builds a
+candidate zone, increments the SOA serial, validates it with `named-checkzone`,
+re-signs it with the existing keys using `dnssec-signzone`, validates the
+result with `dnssec-verify`, and only then replaces the live zone and reloads
+BIND. SendmailAnalyzer never creates or rotates DNSSEC keys and installs no
+DNSSEC maintenance cron job.
+
+If DNS is hosted externally, the package leaves it unchanged and reports the
+A record that the administrator must create. It never requests or stores DNS
+provider credentials.
+
+In a non-interactive installation where no existing Basic Auth user exists and
+no password has been preseeded, the core package is installed but the new WAN
+site is not created. This prevents accidental unauthenticated exposure.
+
+Legacy `/reports/` integrations remain understood by the migration helper for
+compatibility, but they are no longer the preferred fresh-install layout.
+
+The manual Apache example is installed as:
 
 ```text
 /usr/share/doc/sendmailanalyzer/apache2-sendmailanalyzer.conf

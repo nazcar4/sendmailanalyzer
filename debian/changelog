@@ -1,3 +1,14 @@
+sendmailanalyzer (10.0.16-19) stable; urgency=medium
+
+  * Add visual dashboard insights and mutually exclusive message outcomes.
+  * Add transactional dedicated-subdomain Apache, TLS, Basic Auth and
+    compatible local BIND/DNSSEC setup.
+  * Preserve existing dedicated reporting sites and prevent stale /reports/
+    integration from being revived during upgrades.
+  * Add Debconf setup and update public documentation and regression coverage.
+
+ -- Nazcar <nazcar@almogavers.net>  Fri, 16 Oct 2026 07:31:02 +0200
+
 sendmailanalyzer (10.0.16-18) stable; urgency=medium
 
   * Display the installed Debian package revision dynamically in the web
