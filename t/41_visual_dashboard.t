@@ -26,4 +26,42 @@ my $storage="$Bin/../lib/SendmailAnalyzer/Storage/SQLite.pm";
 open my $sf,'<:encoding(UTF-8)',$storage or die $!; local $/; my $ss=<$sf>; close $sf;
 like($ss,qr/direction='relay'.*relay/s,'stats includes relay direction for visual distribution');
 
+
+like(
+    $s,
+    qr/SendmailAnalyzer visual refresh/,
+    'global visual refresh layer is present'
+);
+
+like(
+    $s,
+    qr/--shadow-card:/,
+    'global design system defines reusable card elevation'
+);
+
+like(
+    $s,
+    qr/\.pagehead:after/,
+    'page headings use the refreshed visual treatment'
+);
+
+like(
+    $s,
+    qr/\.category-card:hover/,
+    'navigation cards have clear interactive feedback'
+);
+
+like(
+    $s,
+    qr/\.badge\.good/,
+    'semantic badges remain visually differentiated'
+);
+
+
+like(
+    $s,
+    qr/\.seg-amber\{fill:/,
+    'amber meter segments have a defined visual fill'
+);
+
 done_testing;

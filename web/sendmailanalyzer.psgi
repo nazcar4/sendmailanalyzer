@@ -160,48 +160,148 @@ sub date_shift { my($d,$delta)=@_; my $e=date_epoch($d); return $d if !defined $
 sub month_shift { my($d,$delta)=@_; my($y,$m)=split /-/,$d; $m += $delta; while($m<1){$m+=12;$y--} while($m>12){$m-=12;$y++} return sprintf('%04d-%02d-01',$y,$m); }
 sub days_in_month { my($d)=@_; my($y,$m)=split /-/,$d; my $ny=$y; my $nm=$m+1; if($nm==13){$nm=1;$ny++} my $e=eval{timelocal(0,0,12,1,$nm-1,$ny)}; return 31 if !defined $e; return 0+(strftime('%d',localtime($e-86400))); }
 sub month_name { my($m)=@_; my @n=qw(January February March April May June July August September October November December); return $n[$m-1]||''; }
+sub selected_period {
+    my($p)=@_;
+    $p||={};
+
+    my $date=valid_date(substr($p->{date}||'',0,10));
+    my $scope=($p->{scope}||'') eq 'month' ? 'month' : 'day';
+    my $hour=substr($p->{hour}||'',0,2);
+
+    $hour=''
+        if $scope eq 'month'
+        || $hour !~ /^(?:[01]\d|2[0-3])$/;
+
+    my($from,$to,$label);
+
+    if($scope eq 'month') {
+        my($y,$m)=split /-/,$date;
+        my $dim=days_in_month($date);
+
+        $date=sprintf('%04d-%02d-01',$y,$m);
+        $from=$date.'T00:00:00';
+        $to=sprintf(
+            '%04d-%02d-%02dT23:59:59.999999',
+            $y,$m,$dim
+        );
+        $label=month_name($m).' '.$y.' · Full month';
+    }
+    else {
+        $from=$date.'T'.
+            ($hour ne '' ? $hour.':00:00' : '00:00:00');
+
+        $to=$date.'T'.
+            ($hour ne ''
+                ? $hour.':59:59.999999'
+                : '23:59:59.999999');
+
+        $label=$date.' · '.
+            ($hour ne ''
+                ? 'Hour '.$hour.':00–'.$hour.':59'
+                : 'Full day');
+    }
+
+    return {
+        date=>$date,
+        scope=>$scope,
+        hour=>$hour,
+        from=>$from,
+        to=>$to,
+        label=>$label
+    };
+}
+
+sub route_period {
+    my($period,$route)=@_;
+
+    return {
+        date=>$period->{date},
+        hour=>$period->{hour},
+        scope=>$period->{scope},
+        route=>$route
+    };
+}
+
+sub period_path {
+    my($route,$period)=@_;
+
+    return
+        $route.
+        '?date='.uri_escape_utf8($period->{date}||'').
+        '&hour='.uri_escape_utf8($period->{hour}||'').
+        '&scope='.uri_escape_utf8($period->{scope}||'day');
+}
+
 sub month_index {
-    my($prefix,$date,$scope)=@_; $date=valid_date($date); $scope||='day'; my($y,$m)=split /-/,$date; my @abbr=qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
+    my($prefix,$date,$scope,$route)=@_;
+    $route||='/'; $date=valid_date($date); $scope||='day'; my($y,$m)=split /-/,$date; my @abbr=qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
     my $prevy=sprintf('%04d-%02d-01',$y-1,$m); my $nexty=sprintf('%04d-%02d-01',$y+1,$m); my $available=st()->available_months_for_year($y);
     my $months='';
     for my $mm(1..12){
         my $ym=sprintf('%04d-%02d',$y,$mm); my $ds=$ym.'-01'; my $cl=($scope eq 'month' && $mm==$m)?' active':'';
-        if($available->{$ym}){ $months.='<a class="month-link'.$cl.'" href="'.h(u($prefix,'/?date='.$ds.'&scope=month&hour=')).'">'.$abbr[$mm-1].'</a>'; }
+        if($route ne '/' || $available->{$ym}){ $months.='<a class="month-link'.$cl.'" href="'.h(u($prefix,$route.'?date='.$ds.'&scope=month&hour=')).'">'.$abbr[$mm-1].'</a>'; }
         else { $months.='<span class="month-link disabled'.$cl.'" aria-disabled="true">'.$abbr[$mm-1].'</span>'; }
     }
-    return '<div class="month-index"><div class="year-line"><a href="'.h(u($prefix,'/?date='.$prevy.'&scope=month&hour=')).'">‹</a><strong>Year: '.$y.'</strong><a href="'.h(u($prefix,'/?date='.$nexty.'&scope=month&hour=')).'">›</a></div><div class="month-caption">Months</div><div class="month-grid">'.$months.'</div></div>';
+    return '<div class="month-index"><div class="year-line"><a href="'.h(u($prefix,$route.'?date='.$prevy.'&scope=month&hour=')).'">‹</a><strong>Year: '.$y.'</strong><a href="'.h(u($prefix,$route.'?date='.$nexty.'&scope=month&hour=')).'">›</a></div><div class="month-caption">Months</div><div class="month-grid">'.$months.'</div></div>';
 }
 sub calendar_widget {
-    my($prefix,$date)=@_; $date=valid_date($date); my($y,$m,$sel)=split /-/,$date; my $dim=days_in_month($date); my $first=date_epoch(sprintf('%04d-%02d-01',$y,$m)); my $w=(localtime($first))[6]; $w=($w+6)%7; my $available=st()->available_days_for_month(sprintf('%04d-%02d',$y,$m));
+    my($prefix,$date,$route)=@_;
+    $route||='/'; $date=valid_date($date); my($y,$m,$sel)=split /-/,$date; my $dim=days_in_month($date); my $first=date_epoch(sprintf('%04d-%02d-01',$y,$m)); my $w=(localtime($first))[6]; $w=($w+6)%7; my $available=st()->available_days_for_month(sprintf('%04d-%02d',$y,$m));
     my $html='<div class="days-calendar"><div class="days-title">Days</div><div class="days-week"><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span><span>Su</span></div><div class="days-grid">';
     $html.='<span class="day-empty"></span>' for 1..$w;
     for my $d(1..$dim){
         my $ds=sprintf('%04d-%02d-%02d',$y,$m,$d); my $cl=$d==0+$sel?' selected':'';
-        if($available->{$ds}){ $html.='<a class="day-cell'.$cl.'" href="'.h(u($prefix,'/?date='.$ds.'&hour=')).'">'.sprintf('%02d',$d).'</a>'; }
+        if($route ne '/' || $available->{$ds}){ $html.='<a class="day-cell'.$cl.'" href="'.h(u($prefix,$route.'?date='.$ds.'&hour=')).'">'.sprintf('%02d',$d).'</a>'; }
         else { $html.='<span class="day-cell disabled'.$cl.'" aria-disabled="true">'.sprintf('%02d',$d).'</span>'; }
     }
     return $html.'</div></div>';
 }
 sub time_console {
-    my($prefix,$date,$hour,$period_scope)=@_; $date=valid_date($date); $period_scope=($period_scope||'') eq 'month'?'month':'day'; $hour='' if $period_scope eq 'month' || !defined($hour)||$hour !~ /^(?:[01]\d|2[0-3])$/; my($y,$m,$sel)=split /-/,$date;
+    my($prefix,$date,$hour,$period_scope,$route)=@_;
+    $route||='/'; $date=valid_date($date); $period_scope=($period_scope||'') eq 'month'?'month':'day'; $hour='' if $period_scope eq 'month' || !defined($hour)||$hour !~ /^(?:[01]\d|2[0-3])$/; my($y,$m,$sel)=split /-/,$date;
     my($prev,$next,$date_title,$report_kind);
     if($period_scope eq 'month'){
         $prev=month_shift($date,-1); $next=month_shift($date,1); $date_title=month_name($m).' '.$y; $report_kind='Monthly Report';
     } else {
         $prev=date_shift($date,-1); $next=date_shift($date,1); $date_title=sprintf('%02d %s %04d',0+$sel,month_name($m),$y); $report_kind=$hour eq ''?'Daily Report':'Hourly Report · '.$hour.':00';
     }
-    my $hours=''; for my $hh(0..23){ my $hs=sprintf('%02d',$hh); my $cl=$hour eq $hs?' active':''; $hours.='<a class="hour-cell'.$cl.'" href="'.h(u($prefix,'/?date='.$date.'&hour='.$hs)).'">'.$hs.'</a>'; }
+    my $hours=''; for my $hh(0..23){ my $hs=sprintf('%02d',$hh); my $cl=$hour eq $hs?' active':''; $hours.='<a class="hour-cell'.$cl.'" href="'.h(u($prefix,$route.'?date='.$date.'&hour='.$hs)).'">'.$hs.'</a>'; }
     my $dayclass=$period_scope eq 'day' && $hour eq ''?' active':'';
     my $navsuffix=$period_scope eq 'month'?'&scope=month&hour=':'&hour=';
-    my $prev_has=$period_scope eq 'month' ? st()->month_has_data(substr($prev,0,7)) : st()->day_has_data($prev);
-    my $next_has=$period_scope eq 'month' ? st()->month_has_data(substr($next,0,7)) : st()->day_has_data($next);
-    my $prev_nav=$prev_has?'<a href="'.h(u($prefix,'/?date='.$prev.$navsuffix)).'">&lt;&lt; Previous</a>':'<span class="nav-disabled" aria-disabled="true">&lt;&lt; Previous</span>';
-    my $next_nav=$next_has?'<a href="'.h(u($prefix,'/?date='.$next.$navsuffix)).'">Next &gt;&gt;</a>':'<span class="nav-disabled" aria-disabled="true">Next &gt;&gt;</span>';
-    my $hours_box=$period_scope eq 'month'?'<div class="month-scope-note">Select a calendar day to return to daily detail.</div>':'<div class="hours-box"><div class="hours-title">Hours</div><div class="hours-row"><a class="hour-cell day-reset'.$dayclass.'" href="'.h(u($prefix,'/?date='.$date.'&hour=')).'">Day</a>'.$hours.'</div></div>';
-    return '<div class="period-console">'.month_index($prefix,$date,$period_scope).'<div class="period-center"><div class="period-prevnext">'.$prev_nav.'<strong>'.h($date_title).'</strong>'.$next_nav.'</div><div class="report-kind">'.h($report_kind).'</div>'.$hours_box.'</div><div class="period-calendar">'.calendar_widget($prefix,$date).'</div></div>';
+    my $prev_has=$route eq '/'
+        ? ($period_scope eq 'month'
+            ? st()->month_has_data(substr($prev,0,7))
+            : st()->day_has_data($prev))
+        : 1;
+    my $next_has=$route eq '/'
+        ? ($period_scope eq 'month'
+            ? st()->month_has_data(substr($next,0,7))
+            : st()->day_has_data($next))
+        : 1;
+    my $prev_nav=$prev_has?'<a href="'.h(u($prefix,$route.'?date='.$prev.$navsuffix)).'">&lt;&lt; Previous</a>':'<span class="nav-disabled" aria-disabled="true">&lt;&lt; Previous</span>';
+    my $next_nav=$next_has?'<a href="'.h(u($prefix,$route.'?date='.$next.$navsuffix)).'">Next &gt;&gt;</a>':'<span class="nav-disabled" aria-disabled="true">Next &gt;&gt;</span>';
+    my $hours_box=$period_scope eq 'month'?'<div class="month-scope-note">Select a calendar day to return to daily detail.</div>':'<div class="hours-box"><div class="hours-title">Hours</div><div class="hours-row"><a class="hour-cell day-reset'.$dayclass.'" href="'.h(u($prefix,$route.'?date='.$date.'&hour=')).'">Day</a>'.$hours.'</div></div>';
+    return '<div class="period-console">'.month_index($prefix,$date,$period_scope,$route).'<div class="period-center"><div class="period-prevnext">'.$prev_nav.'<strong>'.h($date_title).'</strong>'.$next_nav.'</div><div class="report-kind">'.h($report_kind).'</div>'.$hours_box.'</div><div class="period-calendar">'.calendar_widget($prefix,$date,$route).'</div></div>';
 }
 sub layout {
-    my($title,$body,$prefix,$active,$period)=@_; $active||='/'; my $now=strftime('%Y-%m-%d %H:%M',localtime); my $nav=sidebar_nav($prefix,$active); $period||={date=>strftime('%Y-%m-%d',localtime),hour=>'',scope=>'day'}; my $console=time_console($prefix,$period->{date},$period->{hour},$period->{scope});
+    my($title,$body,$prefix,$active,$period)=@_;
+    $active||='/';
+
+    my $now=strftime('%Y-%m-%d %H:%M',localtime);
+    my $nav=sidebar_nav($prefix,$active);
+    my $console='';
+
+    if($period) {
+        my $period_route=$period->{route}||'/';
+
+        $console=time_console(
+            $prefix,
+            $period->{date},
+            $period->{hour},
+            $period->{scope},
+            $period_route
+        );
+    }
     return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'.h($title).' · SendmailAnalyzer 10</title><link rel="stylesheet" href="'.h(u($prefix,'/assets/app.css')).'"></head><body><header class="topbar"><a class="brand" href="'.h(u($prefix,'/')).'"><span class="brand-copy"><strong>SendmailAnalyzer Report</strong><small>v'.h($runtime_version).'</small></span></a><details class="mobile-menu"><summary>Menu</summary><div class="mobile-menu-body">'.$nav.'</div></details><div class="readonly"><span class="live-dot"></span>real-time report</div></header><div class="app-shell"><aside class="sidebar"><div class="side-scroll">'.$nav.'</div><div class="side-foot"><span class="live-dot"></span>Collector active<br><small>'.h($now).'</small><div class="side-credit">Powered by SendmailAnalyzer v'.h($runtime_version).' (GPLv3)<br>v10 by Nazcar</div></div></aside><main>'.$console.$body.'<footer class="classic-footer"><div><strong>Powered by SendmailAnalyzer v'.h($runtime_version).' (GPLv3)</strong><br><span class="project-credit">v10 © 2026 Nazcar · Original SendmailAnalyzer © 2002–2020 Gilles Darold</span></div><span>'.h($now).'</span></footer></main></div></body></html>';
 }
 sub mini_bar { my($value,$max,$kind)=@_; $max||=1; my $w=$max?int(100*$value/$max):0; $w=100 if $w>100; $w=0 if $w<0; return '<svg class="minibar" viewBox="0 0 100 8" preserveAspectRatio="none"><rect class="track" x="0" y="1" width="100" height="6" rx="3"></rect><rect class="fill fill-'.h($kind||'blue').'" x="0" y="1" width="'.$w.'" height="6" rx="3"></rect></svg>'; }
@@ -312,6 +412,142 @@ sub status_donut {
 sub unique_parties_table {
     my($r)=@_; my @tr=('<tr><td class="num">'.fmt($r->{senders}).'</td><td class="num">'.fmt($r->{recipients}).'</td></tr>'); return simple_table(['Senders','Recipients'],\@tr,'classic-table');
 }
+
+sub dsn_code_visual {
+    my($code)=@_;
+    $code//=q{};
+
+    return ('Success','good','green')
+        if $code =~ /^2\./;
+
+    return ('Temporary failure','warn','amber')
+        if $code =~ /^4\./;
+
+    return ('Permanent failure','bad','red')
+        if $code =~ /^5\./;
+
+    return ('Legacy / other','neutral','gray');
+}
+
+sub dsn_visual_donut {
+    my($success,$temporary,$permanent,$other)=@_;
+
+    $success=0+($success||0);
+    $temporary=0+($temporary||0);
+    $permanent=0+($permanent||0);
+    $other=0+($other||0);
+
+    my $total=$success+$temporary+$permanent+$other;
+
+    return '<div class="empty">No DSN data.</div>'
+        if !$total;
+
+    my @segments=(
+        ['Success 2.x.x',$success,'dsn-pie-success','dsn-legend-success'],
+        ['Temporary 4.x.x',$temporary,'dsn-pie-temporary','dsn-legend-temporary'],
+        ['Permanent 5.x.x',$permanent,'dsn-pie-permanent','dsn-legend-permanent'],
+        ['Legacy / other',$other,'dsn-pie-other','dsn-legend-other'],
+    );
+
+    my $circ=314.159;
+    my $offset=0;
+
+    my $out=
+        '<div class="dsn-donut-wrap">'.
+        '<svg class="dsn-donut" viewBox="0 0 240 210" '.
+        'role="img" aria-label="DSN delivery status distribution">'.
+        '<circle class="dsn-pie-base" cx="105" cy="96" r="50"></circle>';
+
+    for my $seg (@segments) {
+        my($label,$value,$class,$legend)=@$seg;
+        next if !$value;
+
+        my $length=$circ*$value/$total;
+
+        $out.=
+            '<circle class="'.$class.'" '.
+            'cx="105" cy="96" r="50" '.
+            'stroke-dasharray="'.
+            sprintf('%.3f %.3f',$length,$circ-$length).
+            '" stroke-dashoffset="'.
+            sprintf('%.3f',-$offset).
+            '" transform="rotate(-90 105 96)">'.
+            '<title>'.
+            h($label.' · '.fmt($value).' · '.pct($value,$total)).
+            '</title></circle>';
+
+        $offset+=$length;
+    }
+
+    $out.=
+        '<circle class="dsn-pie-hole" cx="105" cy="96" r="29"></circle>'.
+        '<text class="dsn-pie-total" x="105" y="93">'.h(fmt($total)).'</text>'.
+        '<text class="dsn-pie-caption" x="105" y="109">DSN events</text>'.
+        '</svg>'.
+        '<div class="dsn-donut-legend">';
+
+    for my $seg (@segments) {
+        my($label,$value,$class,$legend)=@$seg;
+
+        $out.=
+            '<div class="dsn-legend-row">'.
+            '<span><i class="dsn-legend-dot '.$legend.'"></i>'.h($label).'</span>'.
+            '<strong>'.h(fmt($value)).'</strong>'.
+            '<em>'.h(pct($value,$total)).'</em>'.
+            '</div>';
+    }
+
+    return $out.'</div></div>';
+}
+
+sub dsn_code_ranking {
+    my($rows,$total)=@_;
+
+    return '<div class="empty">No DSN data.</div>'
+        if !$rows || !@$rows;
+
+    $total||=1;
+
+    my @top=@$rows;
+    splice(@top,10) if @top>10;
+
+    my $max=1;
+    for my $r (@top) {
+        my $n=0+($r->{count}||0);
+        $max=$n if $n>$max;
+    }
+
+    my $out='<div class="dsn-ranking">';
+    my $position=1;
+
+    for my $r (@top) {
+        my $code=$r->{status}//'';
+        my $count=0+($r->{count}||0);
+
+        my($meaning,$badge_kind,$bar_kind)=
+            dsn_code_visual($code);
+
+        $out.=
+            '<div class="dsn-rank-row">'.
+            '<span class="dsn-rank-position">'.$position.'</span>'.
+            '<div class="dsn-rank-main">'.
+            '<div class="dsn-rank-head">'.
+            '<span>'.badge($code||'unknown',$badge_kind).' '.h($meaning).'</span>'.
+            '<strong>'.h(fmt($count)).'</strong>'.
+            '</div>'.
+            mini_bar($count,$max,$bar_kind).
+            '<div class="dsn-rank-meta">'.
+            h(pct($count,$total)).' of DSN events'.
+            '</div>'.
+            '</div>'.
+            '</div>';
+
+        $position++;
+    }
+
+    return $out.'</div>';
+}
+
 sub segmented_meter { my($parts)=@_; my $total=0; $total += $_->{value}||0 for @$parts; $total||=1; my $x=0; my $svg='<svg class="meter" viewBox="0 0 100 14" preserveAspectRatio="none">'; for my $p(@$parts){ my $w=100*($p->{value}||0)/$total; $svg.='<rect class="seg-'.h($p->{kind}).'" x="'.sprintf('%.3f',$x).'" y="1" width="'.sprintf('%.3f',$w).'" height="12"></rect>'; $x+=$w; } $svg.='</svg><div class="meter-legend">'; for my $p(@$parts){ $svg.='<span><i class="legend-dot ld-'.h($p->{kind}).'"></i>'.h($p->{label}).'<b>'.h(fmt($p->{value})).'</b><em>'.h(pct($p->{value},$total)).'</em></span>'; } return $svg.'</div>'; }
 sub period_chart {
     my($rows,$key,$title)=@_; return '<div class="empty">No data.</div>' if !@$rows; my $max=1; for my $r(@$rows){ for my $k(qw(messages rejected spam_detected)){ $max=$r->{$k} if ($r->{$k}||0)>$max; } } my $W=980; my $H=280; my $base=225; my $plot=195; my $n=@$rows; my $step=900/($n||1); my $bw=$step>22?5:($step/4); $bw=2 if $bw<2; my $svg='<svg class="bigchart" viewBox="0 0 '.$W.' '.$H.'" role="img" aria-label="'.h($title).'">'; for my $g(0..4){ my $y=30+$plot*$g/4; my $v=int($max*(4-$g)/4); $svg.='<line class="gridline" x1="52" y1="'.$y.'" x2="960" y2="'.$y.'"></line><text class="axis-y" x="46" y="'.($y+4).'">'.h(fmt($v)).'</text>'; } my $i=0; for my $r(@$rows){ my $cx=62+$i*$step; for my $s(['messages','blue',-$bw-1],['rejected','red',0],['spam_detected','amber',$bw+1]){ my($f,$kind,$off)=@$s; my $v=$r->{$f}||0; my $bh=$max?$plot*$v/$max:0; $svg.='<rect class="bar bar-'.h($kind).'" x="'.sprintf('%.2f',$cx+$off).'" y="'.sprintf('%.2f',$base-$bh).'" width="'.sprintf('%.2f',$bw).'" height="'.sprintf('%.2f',$bh).'"><title>'.h(($r->{$key}//'').' · '.$f.': '.$v).'</title></rect>'; } my $show=($n<=14 || $i==0 || $i==$n-1 || $i%3==0); if($show){ my $lab=$r->{$key}//''; $lab=substr($lab,5) if $key eq 'day'; $lab.='h' if $key eq 'hour'; $svg.='<text class="axis-x" x="'.sprintf('%.2f',$cx).'" y="247">'.h($lab).'</text>'; } $i++; } return $svg.'</svg><div class="chartlegend"><span><i class="legend-dot ld-blue"></i>Messages</span><span><i class="legend-dot ld-red"></i>Rejected</span><span><i class="legend-dot ld-amber"></i>Spam</span></div>'; }
@@ -428,16 +664,929 @@ sub pagehead { my($ey,$title,$sub)=@_; return '<div class="pagehead"><div><div c
 sub simple_table { my($heads,$rows)=@_; my $o='<div class="tablewrap"><table><thead><tr>'.join('',map{'<th>'.h($_).'</th>'}@$heads).'</tr></thead><tbody>'; $o.=join('',@$rows); return $o.'</tbody></table></div>'; }
 
 my $CSS=<<'CSS';
-:root{font-family:Verdana,Arial,Helvetica,sans-serif;color:#334155;background:#eef2f3;--classic:#397da3;--classic-dark:#2d6889;--classic-light:#dcebf2;--gold:#d6a23a;--line:#b8cbd5;--panel:#fff;--ink:#334155;--muted:#6f7e87;--blue:#397da3;--green:#41955b;--red:#bb4c48;--amber:#d59a28;--purple:#755a9d;--teal:#398d8b;--navy:#2f5c78}*{box-sizing:border-box}body{margin:0;background:#eef2f3;color:var(--ink)}a{color:#296b92}.topbar{height:55px;background:#f7f7f5;border-bottom:4px solid var(--classic);display:flex;align-items:center;padding:0 16px;position:sticky;top:0;z-index:40}.brand{text-decoration:none;display:flex;align-items:center;gap:8px;height:48px}.brand-version{font-size:10px;background:#397da3;color:#fff;padding:2px 6px;border-radius:2px;border:1px solid #2d6889;box-shadow:inset 0 1px #6ca0ba}.readonly{margin-left:auto;font-size:10px;color:#65757f;text-transform:uppercase;letter-spacing:.05em;display:flex;gap:7px;align-items:center}.live-dot{width:7px;height:7px;border-radius:50%;background:#4cae63;display:inline-block}.app-shell{display:grid;grid-template-columns:215px minmax(0,1fr);min-height:calc(100vh - 55px)}.sidebar{background:#4b83a1;border-right:1px solid #2c6686;position:sticky;top:55px;height:calc(100vh - 55px);display:flex;flex-direction:column;color:#fff}.side-scroll{padding:10px 8px;overflow:auto}.classic-nav-group{margin:0 0 12px}.classic-nav-title{background:#2f6f93;color:#fff;border:1px solid #275f7d;text-align:center;font-size:10px;font-weight:700;letter-spacing:.04em;padding:5px 4px;box-shadow:inset 0 1px #6ca0ba}.side-link{display:flex;align-items:center;gap:5px;color:#f5fbff;text-decoration:none;font-size:11px;padding:5px 7px;border-bottom:1px solid #6d9db6;background:#4b83a1}.side-link:hover{background:#3c7595}.side-link.active{background:#f2e5c9;color:#774f18;font-weight:700;border-left:4px solid #d19a32;padding-left:3px}.side-arrow{font-size:14px;line-height:1;color:#dbeaf1}.side-link.active .side-arrow{color:#a56a1d}.side-foot{margin-top:auto;border-top:1px solid #6d9db6;padding:10px 12px;font-size:9px;line-height:1.6;color:#e2eef4}.mobile-menu{display:none;margin-left:20px}.mobile-menu summary{cursor:pointer;color:#2f6f93;font-weight:700;font-size:12px}.mobile-menu-body{position:absolute;left:8px;right:8px;top:48px;background:#4b83a1;padding:10px;border:1px solid #2c6686;max-height:82vh;overflow:auto;box-shadow:0 8px 30px #0005}main{min-width:0;padding:12px 15px 8px;max-width:1650px;width:100%;margin:0 auto}footer{display:flex;justify-content:space-between;gap:20px;color:#7c8b94;font-size:9px;padding:14px 2px;border-top:1px solid #c8d7de;margin-top:12px}.classic-footer strong{color:#397da3}.project-credit{color:#8a6a31}.period-console{display:grid;grid-template-columns:205px minmax(0,1fr);gap:12px;margin-bottom:12px}.period-calendar,.period-selector{background:#fff;border:1px solid #b8cbd5;box-shadow:0 1px 3px #0001}.calendar{padding:5px}.calendar-head{height:25px;background:#e7d8b6;color:#71531e;display:grid;grid-template-columns:25px 1fr 25px;align-items:center;text-align:center;font-size:11px;border:1px solid #d4bd8d}.calendar-head a{text-decoration:none;color:#71531e;font-size:17px}.calendar-week,.calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;text-align:center}.calendar-week{font-size:8px;color:#65757f;padding-top:4px}.calendar-week span{padding:3px 0}.cal-day,.cal-empty{min-height:21px;display:grid;place-items:center;font-size:9px;text-decoration:none;color:#435561;background:#f4f7f8;border:1px solid #edf1f2}.cal-day:hover{background:#dcebf2}.cal-day.selected{background:#397da3;color:#fff;font-weight:700;border-color:#2d6889}.period-selector{padding:7px 10px}.period-prevnext{background:#397da3;color:#fff;display:grid;grid-template-columns:120px 1fr 120px;align-items:center;text-align:center;height:28px;font-size:10px}.period-prevnext a{color:#fff;text-decoration:none}.period-prevnext strong{font-size:12px}.period-label{text-align:center;color:#a27022;font-size:11px;font-weight:700;padding:6px 0 3px}.hours-label{padding-top:7px}.days-strip,.hours-strip{display:flex;justify-content:center;gap:2px;overflow-x:auto;padding:2px 1px 4px}.day-pill,.hour-pill{display:inline-grid;place-items:center;min-width:24px;height:21px;border:1px solid #b7c9d1;background:#edf3f5;color:#49616d;text-decoration:none;font-size:8px}.day-pill:hover,.hour-pill:hover{background:#dbeaf0}.day-pill.active,.hour-pill.active{background:#397da3;color:#fff;border-color:#2d6889;font-weight:700}.hour-pill{min-width:25px}.pagehead{margin:7px 0 9px}.eyebrow{display:none}.pagehead h1{margin:0;color:#a27022;font-size:18px;text-align:center;font-weight:700}.pagehead p{text-align:center;margin:3px 0;color:#788891;font-size:10px}.kpis{display:grid;grid-template-columns:repeat(6,minmax(105px,1fr));gap:6px}.kpi{background:#fff;border:1px solid #b8cbd5;padding:8px 9px;border-radius:0;box-shadow:none;border-top:4px solid #397da3}.kpi-green{border-top-color:#4f9963}.kpi-red{border-top-color:#b9524e}.kpi-amber{border-top-color:#d49b35}.kpi-purple{border-top-color:#78639c}.kpi-teal{border-top-color:#3e908e}.kpi-label{font-size:8px;color:#667781;text-transform:uppercase;font-weight:700}.kpi-value{font-size:20px;font-weight:700;color:#2f566b;margin-top:3px}.kpi-sub{font-size:8px;color:#87969d;margin-top:2px}.panel,.classic-panel{background:#fff;border:1px solid #b8cbd5;border-radius:0;padding:9px;box-shadow:none}.classic-panel{padding:0}.classic-title{background:#397da3;color:white;text-align:center;font-size:11px;font-weight:700;padding:4px;border-bottom:1px solid #2d6889}.classic-body{padding:7px}.mt{margin-top:9px}.two{display:grid;grid-template-columns:1fr 1fr;gap:9px}.three{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.dashboard-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:9px}.classic-report-grid{display:grid;grid-template-columns:1.35fr 1fr;gap:9px}.classic-chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:9px}.sectionhead{margin-bottom:8px}.sectionhead h2{font-size:12px;color:#2f6f93;margin:0;border-bottom:1px solid #d6e1e6;padding-bottom:4px}.sectionhead p{font-size:9px;color:#7a8b94;margin:3px 0 0}.classic-table{width:100%;border-collapse:collapse;font-size:9px}.classic-table th{background:#e5d7b8;color:#72551f;text-align:center;padding:3px;border:1px solid #d2c39e;text-transform:none;letter-spacing:0}.classic-table td{padding:3px 5px;border:1px solid #d8e1e5;white-space:nowrap}.classic-table td.num{text-align:right;font-variant-numeric:tabular-nums}.classic-table tr:nth-child(even) td{background:#f7fafb}.bigchart{width:100%;height:250px;display:block}.classic-chart{width:100%;height:245px;display:block}.gridline{stroke:#e3d7c0;stroke-width:.8}.axis-y,.axis-x{font-size:8px;fill:#6d7a80}.axis-y{text-anchor:end}.axis-x{text-anchor:middle}.bar-blue{fill:#dda620}.bar-red{fill:#b8564f}.bar-amber{fill:#5a8ead}.bar-size{fill:#d89b21}.bar-in{fill:#d9aa3b}.bar-out{fill:#6d92ad}.chartlegend,.meter-legend{display:flex;gap:12px;flex-wrap:wrap;color:#697982;font-size:9px;justify-content:center;padding:4px}.legend-dot{display:inline-block;width:8px;height:8px;border:1px solid #8f8f8f;margin-right:4px}.ld-blue{background:#dda620}.ld-red{background:#b8564f}.ld-amber{background:#5a8ead}.ld-purple{background:#7d6b9f}.ld-teal{background:#4f9692}.ld-green{background:#579b67}.ld-gray{background:#97a7af}.ld-unknown{background:#97a7af}.meter{width:100%;height:28px}.seg-blue{fill:#d9aa3b}.seg-purple{fill:#6f8eaa}.seg-teal{fill:#4f9692}.seg-gray{fill:#97a7af}.seg-green{fill:#579b67}.seg-red{fill:#b8564f}.meter-legend{display:grid;grid-template-columns:1fr 1fr}.meter-legend span{display:flex;align-items:center}.meter-legend b{margin-left:auto}.meter-legend em{font-style:normal;color:#929fa5;margin-left:4px}.ranking{display:flex;flex-direction:column;gap:6px}.rankrow{display:grid;grid-template-columns:20px 1fr;gap:6px}.rankno{display:grid;place-items:center;width:18px;height:18px;background:#e3edf1;color:#547285;font-size:8px}.rankline{display:flex;gap:5px;font-size:10px}.rankname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rankline strong{margin-left:auto}.rankmeta{font-size:8px;color:#8b989e}.minibar{width:100%;height:6px}.track{fill:#e8eff2}.fill-blue{fill:#d2a13b}.fill-purple{fill:#7e6b9d}.fill-red{fill:#b75b57}.fill-green{fill:#589867}.tablewrap{overflow:auto;border:1px solid #c3d2d9;border-radius:0}table{border-collapse:collapse;width:100%;font-size:10px;background:#fff}th,td{text-align:left;padding:6px 7px;border-bottom:1px solid #e0e8eb;white-space:nowrap}th{background:#397da3;color:white;font-size:8px;text-transform:uppercase;letter-spacing:.02em}tbody tr:hover td{background:#fff8e9}td a{color:#2d708f;text-decoration:none}.qid{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:700}.sendercell{max-width:320px;overflow:hidden;text-overflow:ellipsis}.datecell{color:#657780}.badge{display:inline-flex;padding:2px 6px;border-radius:2px;font-size:8px;font-weight:700;background:#e7edf0;color:#60717b}.badge.good{background:#dcebdc;color:#377247}.badge.bad{background:#efd9d7;color:#923d3a}.badge.warn{background:#f4e7c7;color:#8a651e}.badge.blue{background:#dae8ef;color:#2e6d8c}.badge.purple{background:#e5dff0;color:#665286}.badge.teal{background:#d7ebe9;color:#357673}.searchbar,.period-form{display:flex;gap:6px;align-items:center}.searchbar input,.period-form input{padding:7px 8px;border:1px solid #b9cbd3;border-radius:0}.searchbar input{flex:1}.searchbar button,.period-form button{border:1px solid #2d6889;background:#397da3;color:white;padding:7px 12px;font-weight:700}.statlist{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}.statbox{padding:8px;border:1px solid #d8e3e7;background:#f7fafb}.statbox .n{font-size:18px;font-weight:700;color:#2f6f93}.statbox .t{font-size:8px;color:#7b8b93}.note{padding:9px;border-left:3px solid #397da3;background:#eef5f8;color:#46616f;font-size:9px;line-height:1.5}.category-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.category-card{display:block;text-decoration:none;color:inherit;background:#fff;border:1px solid #b8cbd5;padding:11px}.category-card:hover{background:#fff8e9}.category-card strong{display:block;color:#2f6f93;font-size:12px}.category-card span{display:block;color:#7c8a91;font-size:9px;margin-top:3px}.category-card b{display:block;font-size:20px;color:#a27022;margin-top:7px}.timeline{position:relative}.timeline:before{content:"";position:absolute;left:9px;top:6px;bottom:6px;width:2px;background:#d8e3e7}.event{position:relative;padding:0 0 12px 29px}.event-dot{position:absolute;left:4px;top:3px;width:11px;height:11px;border-radius:50%;background:#397da3;border:2px solid white;box-shadow:0 0 0 1px #91acba}.event-reject .event-dot,.event-virus .event-dot{background:#bb4c48}.event-delivery .event-dot{background:#41955b}.event-deferred .event-dot,.event-dsn .event-dot,.event-filter .event-dot{background:#d59a28}.event-dkim .event-dot,.event-dmarc .event-dot,.event-auth .event-dot,.event-postscreen .event-dot{background:#755a9d}.event-tls .event-dot{background:#398d8b}.event-smtp .event-dot{background:#397da3}.event-event .event-dot{background:#97a7af}.event-head{display:flex;gap:6px;align-items:center;font-size:9px;margin-bottom:3px}.event-time{color:#7f8d94}.event-delta{color:#a27022;font-weight:700;font-variant-numeric:tabular-nums}.event code{display:block;white-space:pre-wrap;word-break:break-word;font-size:9px;line-height:1.4;color:#52666f;background:#f6f9fa;border:1px solid #dce5e8;padding:6px}.detail-hero{background:#397da3;color:#fff;border:1px solid #2d6889}.detail-hero h1{margin:0;font-size:20px}.detail-hero p{color:#deedf4}.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.kv{display:grid;grid-template-columns:125px 1fr;gap:6px 10px;font-size:10px}.kv dt{color:#70828b}.kv dd{margin:0;overflow-wrap:anywhere}.empty{text-align:center;color:#839198;padding:20px}.flow-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.flow-card{border:1px solid #c7d6dc;background:#f8fbfc;padding:6px;text-align:center}.flow-card b{display:block;color:#2f6f93;font-size:16px}.flow-card span{font-size:8px;color:#74858d}.classic-total{font-weight:700;background:#e8f0f3!important}.size-unit{font-size:8px;color:#75858d}@media(max-width:1100px){.period-console{grid-template-columns:185px minmax(0,1fr)}.kpis{grid-template-columns:repeat(3,1fr)}.classic-report-grid,.classic-chart-grid,.dashboard-grid{grid-template-columns:1fr}.category-grid{grid-template-columns:1fr 1fr}}@media(max-width:820px){.app-shell{display:block}.sidebar{display:none}.mobile-menu{display:block}.readonly{margin-left:auto}main{padding:8px}.period-console{grid-template-columns:1fr}.period-calendar{display:none}.period-prevnext{grid-template-columns:85px 1fr 85px}.two,.three,.info-grid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.category-grid{grid-template-columns:1fr}.bigchart,.classic-chart{height:215px}}@media(max-width:500px){.readonly{display:none}.kpi-value{font-size:18px}.meter-legend{grid-template-columns:1fr}}
+:root{font-family:Verdana,Arial,Helvetica,sans-serif;color:#334155;background:#eef2f3;--classic:#397da3;--classic-dark:#2d6889;--classic-light:#dcebf2;--gold:#d6a23a;--line:#b8cbd5;--panel:#fff;--ink:#334155;--muted:#6f7e87;--blue:#397da3;--green:#41955b;--red:#bb4c48;--amber:#d59a28;--purple:#755a9d;--teal:#398d8b;--navy:#2f5c78}*{box-sizing:border-box}body{margin:0;background:#eef2f3;color:var(--ink)}a{color:#296b92}.topbar{height:55px;background:#f7f7f5;border-bottom:4px solid var(--classic);display:flex;align-items:center;padding:0 16px;position:sticky;top:0;z-index:40}.brand{text-decoration:none;display:flex;align-items:center;gap:8px;height:48px}.brand-version{font-size:10px;background:#397da3;color:#fff;padding:2px 6px;border-radius:2px;border:1px solid #2d6889;box-shadow:inset 0 1px #6ca0ba}.readonly{margin-left:auto;font-size:10px;color:#65757f;text-transform:uppercase;letter-spacing:.05em;display:flex;gap:7px;align-items:center}.live-dot{width:7px;height:7px;border-radius:50%;background:#4cae63;display:inline-block}.app-shell{display:grid;grid-template-columns:215px minmax(0,1fr);min-height:calc(100vh - 55px)}.sidebar{background:#4b83a1;border-right:1px solid #2c6686;position:sticky;top:55px;height:calc(100vh - 55px);display:flex;flex-direction:column;color:#fff}.side-scroll{padding:10px 8px;overflow:auto}.classic-nav-group{margin:0 0 12px}.classic-nav-title{background:#2f6f93;color:#fff;border:1px solid #275f7d;text-align:center;font-size:10px;font-weight:700;letter-spacing:.04em;padding:5px 4px;box-shadow:inset 0 1px #6ca0ba}.side-link{display:flex;align-items:center;gap:5px;color:#f5fbff;text-decoration:none;font-size:11px;padding:5px 7px;border-bottom:1px solid #6d9db6;background:#4b83a1}.side-link:hover{background:#3c7595}.side-link.active{background:#f2e5c9;color:#774f18;font-weight:700;border-left:4px solid #d19a32;padding-left:3px}.side-arrow{font-size:14px;line-height:1;color:#dbeaf1}.side-link.active .side-arrow{color:#a56a1d}.side-foot{margin-top:auto;border-top:1px solid #6d9db6;padding:10px 12px;font-size:9px;line-height:1.6;color:#e2eef4}.mobile-menu{display:none;margin-left:20px}.mobile-menu summary{cursor:pointer;color:#2f6f93;font-weight:700;font-size:12px}.mobile-menu-body{position:absolute;left:8px;right:8px;top:48px;background:#4b83a1;padding:10px;border:1px solid #2c6686;max-height:82vh;overflow:auto;box-shadow:0 8px 30px #0005}main{min-width:0;padding:12px 15px 8px;max-width:1650px;width:100%;margin:0 auto}footer{display:flex;justify-content:space-between;gap:20px;color:#7c8b94;font-size:9px;padding:14px 2px;border-top:1px solid #c8d7de;margin-top:12px}.classic-footer strong{color:#397da3}.project-credit{color:#8a6a31}.period-console{display:grid;grid-template-columns:205px minmax(0,1fr);gap:12px;margin-bottom:12px}.period-calendar,.period-selector{background:#fff;border:1px solid #b8cbd5;box-shadow:0 1px 3px #0001}.calendar{padding:5px}.calendar-head{height:25px;background:#e7d8b6;color:#71531e;display:grid;grid-template-columns:25px 1fr 25px;align-items:center;text-align:center;font-size:11px;border:1px solid #d4bd8d}.calendar-head a{text-decoration:none;color:#71531e;font-size:17px}.calendar-week,.calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;text-align:center}.calendar-week{font-size:8px;color:#65757f;padding-top:4px}.calendar-week span{padding:3px 0}.cal-day,.cal-empty{min-height:21px;display:grid;place-items:center;font-size:9px;text-decoration:none;color:#435561;background:#f4f7f8;border:1px solid #edf1f2}.cal-day:hover{background:#dcebf2}.cal-day.selected{background:#397da3;color:#fff;font-weight:700;border-color:#2d6889}.period-selector{padding:7px 10px}.period-prevnext{background:#397da3;color:#fff;display:grid;grid-template-columns:120px 1fr 120px;align-items:center;text-align:center;height:28px;font-size:10px}.period-prevnext a{color:#fff;text-decoration:none}.period-prevnext strong{font-size:12px}.period-label{text-align:center;color:#a27022;font-size:11px;font-weight:700;padding:6px 0 3px}.hours-label{padding-top:7px}.days-strip,.hours-strip{display:flex;justify-content:center;gap:2px;overflow-x:auto;padding:2px 1px 4px}.day-pill,.hour-pill{display:inline-grid;place-items:center;min-width:24px;height:21px;border:1px solid #b7c9d1;background:#edf3f5;color:#49616d;text-decoration:none;font-size:8px}.day-pill:hover,.hour-pill:hover{background:#dbeaf0}.day-pill.active,.hour-pill.active{background:#397da3;color:#fff;border-color:#2d6889;font-weight:700}.hour-pill{min-width:25px}.pagehead{margin:7px 0 9px}.eyebrow{display:none}.pagehead h1{margin:0;color:#a27022;font-size:18px;text-align:center;font-weight:700}.pagehead p{text-align:center;margin:3px 0;color:#788891;font-size:10px}.kpis{display:grid;grid-template-columns:repeat(6,minmax(105px,1fr));gap:6px}.kpi{background:#fff;border:1px solid #b8cbd5;padding:8px 9px;border-radius:0;box-shadow:none;border-top:4px solid #397da3}.kpi-green{border-top-color:#4f9963}.kpi-red{border-top-color:#b9524e}.kpi-amber{border-top-color:#d49b35}.kpi-purple{border-top-color:#78639c}.kpi-teal{border-top-color:#3e908e}.kpi-label{font-size:8px;color:#667781;text-transform:uppercase;font-weight:700}.kpi-value{font-size:20px;font-weight:700;color:#2f566b;margin-top:3px}.kpi-sub{font-size:8px;color:#87969d;margin-top:2px}.panel,.classic-panel{background:#fff;border:1px solid #b8cbd5;border-radius:0;padding:9px;box-shadow:none}.classic-panel{padding:0}.classic-title{background:#397da3;color:white;text-align:center;font-size:11px;font-weight:700;padding:4px;border-bottom:1px solid #2d6889}.classic-body{padding:7px}.mt{margin-top:9px}.two{display:grid;grid-template-columns:1fr 1fr;gap:9px}.three{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.dashboard-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:9px}.classic-report-grid{display:grid;grid-template-columns:1.35fr 1fr;gap:9px}.classic-chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:9px}.sectionhead{margin-bottom:8px}.sectionhead h2{font-size:12px;color:#2f6f93;margin:0;border-bottom:1px solid #d6e1e6;padding-bottom:4px}.sectionhead p{font-size:9px;color:#7a8b94;margin:3px 0 0}.classic-table{width:100%;border-collapse:collapse;font-size:9px}.classic-table th{background:#e5d7b8;color:#72551f;text-align:center;padding:3px;border:1px solid #d2c39e;text-transform:none;letter-spacing:0}.classic-table td{padding:3px 5px;border:1px solid #d8e1e5;white-space:nowrap}.classic-table td.num{text-align:right;font-variant-numeric:tabular-nums}.classic-table tr:nth-child(even) td{background:#f7fafb}.bigchart{width:100%;height:250px;display:block}.classic-chart{width:100%;height:245px;display:block}.gridline{stroke:#e3d7c0;stroke-width:.8}.axis-y,.axis-x{font-size:8px;fill:#6d7a80}.axis-y{text-anchor:end}.axis-x{text-anchor:middle}.bar-blue{fill:#dda620}.bar-red{fill:#b8564f}.bar-amber{fill:#5a8ead}.bar-size{fill:#d89b21}.bar-in{fill:#d9aa3b}.bar-out{fill:#6d92ad}.chartlegend,.meter-legend{display:flex;gap:12px;flex-wrap:wrap;color:#697982;font-size:9px;justify-content:center;padding:4px}.legend-dot{display:inline-block;width:8px;height:8px;border:1px solid #8f8f8f;margin-right:4px}.ld-blue{background:#dda620}.ld-red{background:#b8564f}.ld-amber{background:#5a8ead}.ld-purple{background:#7d6b9f}.ld-teal{background:#4f9692}.ld-green{background:#579b67}.ld-gray{background:#97a7af}.ld-unknown{background:#97a7af}.meter{width:100%;height:28px}.seg-blue{fill:#d9aa3b}.seg-purple{fill:#6f8eaa}.seg-teal{fill:#4f9692}.seg-gray{fill:#97a7af}.seg-green{fill:#579b67}.seg-red{fill:#b8564f}.seg-amber{fill:#d6a23a}.meter-legend{display:grid;grid-template-columns:1fr 1fr}.meter-legend span{display:flex;align-items:center}.meter-legend b{margin-left:auto}.meter-legend em{font-style:normal;color:#929fa5;margin-left:4px}.ranking{display:flex;flex-direction:column;gap:6px}.rankrow{display:grid;grid-template-columns:20px 1fr;gap:6px}.rankno{display:grid;place-items:center;width:18px;height:18px;background:#e3edf1;color:#547285;font-size:8px}.rankline{display:flex;gap:5px;font-size:10px}.rankname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rankline strong{margin-left:auto}.rankmeta{font-size:8px;color:#8b989e}.minibar{width:100%;height:6px}.track{fill:#e8eff2}.fill-blue{fill:#d2a13b}.fill-purple{fill:#7e6b9d}.fill-red{fill:#b75b57}.fill-green{fill:#589867}.tablewrap{overflow:auto;border:1px solid #c3d2d9;border-radius:0}table{border-collapse:collapse;width:100%;font-size:10px;background:#fff}th,td{text-align:left;padding:6px 7px;border-bottom:1px solid #e0e8eb;white-space:nowrap}th{background:#397da3;color:white;font-size:8px;text-transform:uppercase;letter-spacing:.02em}tbody tr:hover td{background:#fff8e9}td a{color:#2d708f;text-decoration:none}.qid{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:700}.sendercell{max-width:320px;overflow:hidden;text-overflow:ellipsis}.datecell{color:#657780}.badge{display:inline-flex;padding:2px 6px;border-radius:2px;font-size:8px;font-weight:700;background:#e7edf0;color:#60717b}.badge.good{background:#dcebdc;color:#377247}.badge.bad{background:#efd9d7;color:#923d3a}.badge.warn{background:#f4e7c7;color:#8a651e}.badge.blue{background:#dae8ef;color:#2e6d8c}.badge.purple{background:#e5dff0;color:#665286}.badge.teal{background:#d7ebe9;color:#357673}.searchbar,.period-form{display:flex;gap:6px;align-items:center}.searchbar input,.period-form input{padding:7px 8px;border:1px solid #b9cbd3;border-radius:0}.searchbar input{flex:1}.searchbar button,.period-form button{border:1px solid #2d6889;background:#397da3;color:white;padding:7px 12px;font-weight:700}.statlist{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}.statbox{padding:8px;border:1px solid #d8e3e7;background:#f7fafb}.statbox .n{font-size:18px;font-weight:700;color:#2f6f93}.statbox .t{font-size:8px;color:#7b8b93}.note{padding:9px;border-left:3px solid #397da3;background:#eef5f8;color:#46616f;font-size:9px;line-height:1.5}.category-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.category-card{display:block;text-decoration:none;color:inherit;background:#fff;border:1px solid #b8cbd5;padding:11px}.category-card:hover{background:#fff8e9}.category-card strong{display:block;color:#2f6f93;font-size:12px}.category-card span{display:block;color:#7c8a91;font-size:9px;margin-top:3px}.category-card b{display:block;font-size:20px;color:#a27022;margin-top:7px}.timeline{position:relative}.timeline:before{content:"";position:absolute;left:9px;top:6px;bottom:6px;width:2px;background:#d8e3e7}.event{position:relative;padding:0 0 12px 29px}.event-dot{position:absolute;left:4px;top:3px;width:11px;height:11px;border-radius:50%;background:#397da3;border:2px solid white;box-shadow:0 0 0 1px #91acba}.event-reject .event-dot,.event-virus .event-dot{background:#bb4c48}.event-delivery .event-dot{background:#41955b}.event-deferred .event-dot,.event-dsn .event-dot,.event-filter .event-dot{background:#d59a28}.event-dkim .event-dot,.event-dmarc .event-dot,.event-auth .event-dot,.event-postscreen .event-dot{background:#755a9d}.event-tls .event-dot{background:#398d8b}.event-smtp .event-dot{background:#397da3}.event-event .event-dot{background:#97a7af}.event-head{display:flex;gap:6px;align-items:center;font-size:9px;margin-bottom:3px}.event-time{color:#7f8d94}.event-delta{color:#a27022;font-weight:700;font-variant-numeric:tabular-nums}.event code{display:block;white-space:pre-wrap;word-break:break-word;font-size:9px;line-height:1.4;color:#52666f;background:#f6f9fa;border:1px solid #dce5e8;padding:6px}.detail-hero{background:#397da3;color:#fff;border:1px solid #2d6889}.detail-hero h1{margin:0;font-size:20px}.detail-hero p{color:#deedf4}.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.kv{display:grid;grid-template-columns:125px 1fr;gap:6px 10px;font-size:10px}.kv dt{color:#70828b}.kv dd{margin:0;overflow-wrap:anywhere}.empty{text-align:center;color:#839198;padding:20px}.flow-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.flow-card{border:1px solid #c7d6dc;background:#f8fbfc;padding:6px;text-align:center}.flow-card b{display:block;color:#2f6f93;font-size:16px}.flow-card span{font-size:8px;color:#74858d}.classic-total{font-weight:700;background:#e8f0f3!important}.size-unit{font-size:8px;color:#75858d}@media(max-width:1100px){.period-console{grid-template-columns:185px minmax(0,1fr)}.kpis{grid-template-columns:repeat(3,1fr)}.classic-report-grid,.classic-chart-grid,.dashboard-grid{grid-template-columns:1fr}.category-grid{grid-template-columns:1fr 1fr}}@media(max-width:820px){.app-shell{display:block}.sidebar{display:none}.mobile-menu{display:block}.readonly{margin-left:auto}main{padding:8px}.period-console{grid-template-columns:1fr}.period-calendar{display:none}.period-prevnext{grid-template-columns:85px 1fr 85px}.two,.three,.info-grid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.category-grid{grid-template-columns:1fr}.bigchart,.classic-chart{height:215px}}@media(max-width:500px){.readonly{display:none}.kpi-value{font-size:18px}.meter-legend{grid-template-columns:1fr}}
 /* 10.0.16: compact time navigation and classic-inspired report graphs */
 .topbar{height:52px;padding:0 14px;border-bottom:2px solid var(--classic)}.brand{height:50px;gap:7px}.brand-copy{display:flex;align-items:baseline;gap:8px}.brand-copy strong{font-family:Verdana,Arial,sans-serif;font-size:22px;color:#c8650d;letter-spacing:-.03em}.brand-copy small{font-size:9px;color:#6b7d87}.app-shell{min-height:calc(100vh - 52px)}.sidebar{top:52px;height:calc(100vh - 52px)}
 .period-console{display:grid;grid-template-columns:112px minmax(420px,1fr) 150px;gap:4px;margin:0 0 8px;border:1px solid #397da3;background:#f0f0f0}.month-index,.period-center,.period-calendar{background:#f0f0f0;border:0;box-shadow:none}.month-index{border-right:1px solid #397da3}.year-line{display:grid;grid-template-columns:18px 1fr 18px;align-items:center;height:23px;background:#397da3;color:#fff;font-size:9px;text-align:center}.year-line a{color:#fff;text-decoration:none;font-size:14px}.month-caption,.days-title,.hours-title{background:#397da3;color:#fff;text-align:center;font-size:9px;font-weight:700;padding:2px}.month-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0;padding:2px}.month-link{font-size:8px;line-height:16px;text-align:center;color:#285e7d;text-decoration:none;border:1px solid transparent}.month-link:hover,.month-link.active{background:#dcebf2;border-color:#397da3}.month-link.active{font-weight:700;color:#c8650d}.period-center{min-width:0}.period-prevnext{height:23px;grid-template-columns:105px 1fr 105px;font-size:9px}.period-prevnext strong{font-size:10px}.report-kind{text-align:center;color:#c8650d;font-size:16px;line-height:24px}.month-scope-note{text-align:center;color:#657780;font-size:9px;line-height:24px}.hours-box{width:max-content;max-width:100%;margin:0 auto 3px;border:1px solid #397da3}.hours-title{padding:1px 5px}.hours-row{display:flex;align-items:center;white-space:nowrap;overflow-x:auto;background:#f0f0f0}.hour-cell{display:block;min-width:20px;height:17px;line-height:17px;text-align:center;font-size:8px;color:#2d6889;text-decoration:none;border-right:1px solid #d0d9de}.hour-cell:last-child{border-right:0}.hour-cell:hover,.hour-cell.active{background:#397da3;color:#fff}.day-reset{min-width:27px;font-weight:700}.period-calendar{border-left:1px solid #397da3}.days-calendar{padding:0}.days-title{height:22px;line-height:18px}.days-week,.days-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:0;text-align:center}.days-week span{font-size:7px;line-height:14px;color:#334d5b}.day-cell,.day-empty{display:block;min-height:15px;line-height:15px;font-size:8px;text-decoration:none;color:#2d6889;border:0;background:transparent}.day-cell:hover,.day-cell.selected{background:#397da3;color:#fff;font-weight:700}.month-link.disabled,.month-link.disabled:hover{background:transparent;border-color:transparent;color:#9ba8ae;font-weight:400;cursor:default}.day-cell.disabled,.day-cell.disabled:hover{background:transparent;color:#a3adb2;font-weight:400;cursor:default}.period-prevnext .nav-disabled{color:#9ba8ae;cursor:default}.report-scope{text-align:center;font-size:9px;color:#7a858a;margin:-1px 0 7px}.classic-visual-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}.classic-graph-card{background:#f7f7f5;border:8px solid #fff;outline:1px solid #d7d7d2;border-radius:10px;box-shadow:3px 3px 8px #0002;padding:7px;max-width:650px;width:88%;justify-self:center}.classic-graph-card h3{text-align:center;margin:0 0 2px;font-size:12px;color:#555}.classic-line-chart{display:block;width:100%;height:245px}.line-in,.line-out,.line-local,.line-unknown{fill:none;stroke-width:2}.line-in{stroke:#16a8d4}.line-out{stroke:#a8cf18}.line-local{stroke:#e48b31}.line-unknown{stroke:#97a7af;stroke-dasharray:5 4}.ld-in{background:#16a8d4}.ld-out{background:#a8cf18}.ld-local{background:#e48b31}.direction-donut{display:block;width:260px;max-width:100%;height:190px;margin:0 auto}.pie-base,.pie-in,.pie-out,.pie-local,.pie-relay,.pie-unknown{fill:none;stroke-width:46}.pie-base{stroke:#edf0ed}.pie-in{stroke:#4bb5d8}.pie-out{stroke:#b8d833}.pie-local{stroke:#e06d62}.pie-relay{stroke:#7b8fa3}.pie-unknown{stroke:#97a7af}.pie-hole{fill:#f7f7f5}.pie-total{text-anchor:middle;font-size:18px;font-weight:700;fill:#3d5664}.pie-caption{text-anchor:middle;font-size:8px;fill:#79858c}.pie-legend{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:8px;max-width:280px;margin:0 auto}.pie-legend span{display:flex;align-items:center;gap:3px}.pie-legend b{margin-left:auto}.ld-pie-in{background:#4bb5d8}.ld-pie-out{background:#b8d833}.ld-pie-local{background:#e06d62}.ld-pie-relay{background:#7b8fa3}.ld-pie-unknown{background:#97a7af}.pie-status-delivered,.pie-status-rejected,.pie-status-deferred,.pie-status-processed{fill:none;stroke-width:46}.pie-status-delivered{stroke:#579b67}.pie-status-rejected{stroke:#b8564f}.pie-status-deferred{stroke:#d6a23a}.pie-status-processed{stroke:#7b8fa3}.ld-pie-status-delivered{background:#579b67}.ld-pie-status-rejected{background:#b8564f}.ld-pie-status-deferred{background:#d6a23a}.ld-pie-status-processed{background:#7b8fa3}.compact-panel{align-self:center;max-width:500px;width:85%;justify-self:center}.side-credit{margin-top:8px;padding-top:6px;border-top:1px solid #72a0b8;font-size:7px;line-height:1.35;color:#e9f4f8}.classic-footer{background:#397da3;color:#fff;border:0;padding:5px 7px;margin-top:12px;font-size:8px}.classic-footer strong,.classic-footer .project-credit{color:#fff}
+
+/* SendmailAnalyzer visual refresh — global UI layer */
+:root{
+  --surface:#ffffff;
+  --surface-soft:#f6f9fb;
+  --surface-tint:#edf5f8;
+  --border-soft:#d5e1e7;
+  --border-strong:#b8cbd5;
+  --shadow-soft:0 4px 16px rgba(37,73,94,.08);
+  --shadow-card:0 8px 24px rgba(37,73,94,.10);
+  --shadow-hover:0 12px 30px rgba(37,73,94,.14);
+  --radius-sm:8px;
+  --radius-md:12px;
+  --radius-lg:16px;
+  --sidebar-top:#2f7195;
+  --sidebar-bottom:#245d7d;
+}
+
+body{
+  background:
+    linear-gradient(180deg,#f4f7f9 0,#edf2f5 210px,#eef3f5 100%);
+  color:#314957;
+}
+
+.topbar{
+  height:62px;
+  background:rgba(255,255,255,.96);
+  border-bottom:1px solid #d4e0e5;
+  box-shadow:0 3px 14px rgba(35,70,90,.09);
+  padding:0 22px;
+}
+
+.brand{
+  height:60px;
+  gap:11px;
+}
+
+.brand-version{
+  border:0;
+  border-radius:999px;
+  padding:4px 9px;
+  font-weight:700;
+  box-shadow:none;
+  background:linear-gradient(135deg,#397da3,#2d6889);
+}
+
+.readonly{
+  background:#eef7f1;
+  border:1px solid #d5e8da;
+  border-radius:999px;
+  padding:5px 9px;
+  color:#4e6d58;
+  font-weight:700;
+}
+
+.live-dot{
+  width:8px;
+  height:8px;
+  box-shadow:0 0 0 3px rgba(76,174,99,.14);
+}
+
+.app-shell{
+  grid-template-columns:238px minmax(0,1fr);
+  min-height:calc(100vh - 62px);
+}
+
+.sidebar{
+  top:62px;
+  height:calc(100vh - 62px);
+  background:
+    linear-gradient(180deg,var(--sidebar-top),var(--sidebar-bottom));
+  border-right:0;
+  box-shadow:5px 0 18px rgba(30,70,94,.10);
+}
+
+.side-scroll{
+  padding:14px 10px;
+}
+
+.classic-nav-group{
+  margin:0 0 18px;
+}
+
+.classic-nav-title{
+  background:rgba(17,63,89,.24);
+  border:0;
+  border-radius:8px;
+  text-align:left;
+  padding:7px 9px;
+  color:#eaf5fa;
+  font-size:9px;
+  letter-spacing:.10em;
+  box-shadow:none;
+}
+
+.side-link{
+  border:0;
+  border-radius:8px;
+  margin:2px 0;
+  padding:7px 9px;
+  background:transparent;
+  transition:
+    background .15s ease,
+    transform .15s ease,
+    box-shadow .15s ease;
+}
+
+.side-link:hover{
+  background:rgba(255,255,255,.11);
+  transform:translateX(2px);
+}
+
+.side-link.active{
+  background:#fff;
+  color:#285e7d;
+  border-left:0;
+  padding-left:9px;
+  box-shadow:0 5px 15px rgba(15,48,68,.18);
+}
+
+.side-link.active:before{
+  content:"";
+  width:4px;
+  align-self:stretch;
+  border-radius:999px;
+  background:#d6a23a;
+  margin-right:2px;
+}
+
+.side-arrow{
+  opacity:.65;
+}
+
+.side-link.active .side-arrow{
+  color:#c68822;
+  opacity:1;
+}
+
+.side-foot{
+  border-top:1px solid rgba(255,255,255,.16);
+  color:#d9ebf4;
+}
+
+main{
+  max-width:1700px;
+  padding:22px 26px 30px;
+}
+
+.pagehead{
+  position:relative;
+  overflow:hidden;
+  margin:0 0 16px;
+  padding:18px 22px;
+  background:
+    linear-gradient(135deg,#fff 0%,#f8fbfc 72%,#edf5f8 100%);
+  border:1px solid var(--border-soft);
+  border-radius:var(--radius-lg);
+  box-shadow:var(--shadow-soft);
+}
+
+.pagehead:after{
+  content:"";
+  position:absolute;
+  right:-50px;
+  top:-65px;
+  width:180px;
+  height:180px;
+  border-radius:50%;
+  background:rgba(57,125,163,.055);
+}
+
+.eyebrow{
+  display:inline-block;
+  margin-bottom:5px;
+  padding:3px 7px;
+  border-radius:999px;
+  background:#e4f0f5;
+  color:#397da3;
+  font-size:8px;
+  font-weight:700;
+  letter-spacing:.10em;
+  text-transform:uppercase;
+}
+
+.pagehead h1{
+  position:relative;
+  z-index:1;
+  margin:0;
+  color:#284f66;
+  font-size:25px;
+  line-height:1.2;
+  text-align:left;
+  letter-spacing:-.02em;
+}
+
+.pagehead p{
+  position:relative;
+  z-index:1;
+  margin:6px 0 0;
+  max-width:850px;
+  color:#71838d;
+  font-size:10px;
+  line-height:1.55;
+  text-align:left;
+}
+
+.kpis{
+  grid-template-columns:repeat(auto-fit,minmax(155px,1fr));
+  gap:12px;
+}
+
+.kpi{
+  position:relative;
+  overflow:hidden;
+  min-height:105px;
+  padding:15px 16px 14px;
+  background:var(--surface);
+  border:1px solid var(--border-soft);
+  border-top:4px solid #397da3;
+  border-radius:var(--radius-md);
+  box-shadow:var(--shadow-soft);
+  transition:
+    transform .15s ease,
+    box-shadow .15s ease;
+}
+
+.kpi:hover{
+  transform:translateY(-2px);
+  box-shadow:var(--shadow-hover);
+}
+
+.kpi:after{
+  content:"";
+  position:absolute;
+  right:-22px;
+  bottom:-28px;
+  width:82px;
+  height:82px;
+  border-radius:50%;
+  background:rgba(57,125,163,.045);
+}
+
+.kpi-green:after{background:rgba(65,149,91,.055)}
+.kpi-red:after{background:rgba(187,76,72,.055)}
+.kpi-amber:after{background:rgba(213,154,40,.070)}
+.kpi-purple:after{background:rgba(117,90,157,.055)}
+.kpi-teal:after{background:rgba(57,141,139,.055)}
+
+.kpi-label{
+  position:relative;
+  z-index:1;
+  font-size:9px;
+  letter-spacing:.06em;
+}
+
+.kpi-value{
+  position:relative;
+  z-index:1;
+  margin-top:6px;
+  color:#284f66;
+  font-size:28px;
+  line-height:1;
+  letter-spacing:-.035em;
+  font-variant-numeric:tabular-nums;
+}
+
+.kpi-sub{
+  position:relative;
+  z-index:1;
+  margin-top:7px;
+  color:#81919a;
+  font-size:9px;
+}
+
+.panel,
+.classic-panel{
+  background:var(--surface);
+  border:1px solid var(--border-soft);
+  border-radius:var(--radius-md);
+  box-shadow:var(--shadow-soft);
+}
+
+.panel{
+  padding:16px;
+}
+
+.classic-panel{
+  overflow:hidden;
+}
+
+.classic-title{
+  padding:7px 10px;
+  border:0;
+  background:linear-gradient(135deg,#397da3,#326f92);
+  font-size:11px;
+}
+
+.classic-body{
+  padding:13px;
+}
+
+.mt{
+  margin-top:14px;
+}
+
+.two,
+.three,
+.dashboard-grid,
+.classic-report-grid,
+.classic-chart-grid,
+.classic-visual-grid{
+  gap:14px;
+}
+
+.sectionhead{
+  margin-bottom:11px;
+}
+
+.sectionhead h2{
+  margin:0;
+  padding:0 0 7px;
+  border-bottom:1px solid #e1e9ed;
+  color:#2c6484;
+  font-size:14px;
+  letter-spacing:-.01em;
+}
+
+.sectionhead p{
+  margin:5px 0 0;
+  color:#84939b;
+  font-size:9px;
+  line-height:1.45;
+}
+
+.tablewrap{
+  overflow:auto;
+  border:1px solid var(--border-soft);
+  border-radius:10px;
+  box-shadow:inset 0 1px 0 #fff;
+}
+
+table{
+  font-size:10px;
+}
+
+th{
+  position:sticky;
+  top:0;
+  z-index:2;
+  padding:8px 9px;
+  background:linear-gradient(180deg,#3f83a8,#356f91);
+  border-bottom:0;
+  font-size:8px;
+  letter-spacing:.06em;
+}
+
+td{
+  padding:8px 9px;
+  border-bottom:1px solid #e5ecef;
+}
+
+tbody tr:nth-child(even) td{
+  background:#fafcfd;
+}
+
+tbody tr:hover td{
+  background:#fff7e7;
+}
+
+.num{
+  text-align:right;
+  font-variant-numeric:tabular-nums;
+}
+
+.badge{
+  align-items:center;
+  min-height:20px;
+  padding:3px 8px;
+  border:1px solid transparent;
+  border-radius:999px;
+  font-size:8px;
+  letter-spacing:.01em;
+}
+
+.badge.good{
+  border-color:#cfe4d4;
+  background:#e7f3e9;
+  color:#317144;
+}
+
+.badge.bad{
+  border-color:#ead0ce;
+  background:#f7e5e3;
+  color:#963d39;
+}
+
+.badge.warn{
+  border-color:#eadab2;
+  background:#fbf0d4;
+  color:#8b651a;
+}
+
+.badge.blue{
+  border-color:#cadfe9;
+  background:#e5f0f5;
+}
+
+.badge.purple{
+  border-color:#dad2e7;
+  background:#eee9f5;
+}
+
+.badge.teal{
+  border-color:#c9e2df;
+  background:#e2f1ef;
+}
+
+.ranking{
+  gap:10px;
+}
+
+.rankrow{
+  grid-template-columns:27px 1fr;
+  gap:9px;
+}
+
+.rankno{
+  width:25px;
+  height:25px;
+  border-radius:50%;
+  background:#e7f0f4;
+  color:#39708e;
+  font-size:9px;
+  font-weight:700;
+}
+
+.rankline{
+  font-size:10px;
+}
+
+.minibar{
+  height:8px;
+  margin-top:4px;
+}
+
+.track{
+  fill:#e8eff2;
+}
+
+.fill-green{fill:#579b67}
+.fill-amber{fill:#d6a23a}
+.fill-red{fill:#b75b57}
+.fill-gray{fill:#93a4ad}
+
+.statlist{
+  gap:10px;
+}
+
+.statbox{
+  padding:13px;
+  border:1px solid var(--border-soft);
+  border-radius:10px;
+  background:linear-gradient(180deg,#fff,#f7fafb);
+}
+
+.statbox .n{
+  font-size:22px;
+}
+
+.flow-cards{
+  gap:9px;
+}
+
+.flow-card{
+  padding:10px;
+  border:1px solid var(--border-soft);
+  border-radius:10px;
+  background:linear-gradient(180deg,#fff,#f6f9fa);
+}
+
+.flow-card b{
+  font-size:20px;
+}
+
+.category-grid{
+  gap:12px;
+}
+
+.category-card{
+  position:relative;
+  overflow:hidden;
+  padding:16px;
+  border:1px solid var(--border-soft);
+  border-radius:12px;
+  box-shadow:var(--shadow-soft);
+  transition:
+    transform .15s ease,
+    box-shadow .15s ease,
+    border-color .15s ease;
+}
+
+.category-card:hover{
+  transform:translateY(-2px);
+  background:#fff;
+  border-color:#b9d1dc;
+  box-shadow:var(--shadow-hover);
+}
+
+.category-card strong{
+  font-size:14px;
+}
+
+.category-card b{
+  margin-top:10px;
+  font-size:24px;
+}
+
+.note{
+  padding:12px 13px;
+  border-left:4px solid #397da3;
+  border-radius:8px;
+  background:#eef6f9;
+  font-size:9px;
+}
+
+.searchbar input,
+.period-form input{
+  border-color:#c7d7de;
+  border-radius:8px;
+  background:#fff;
+}
+
+.searchbar button,
+.period-form button{
+  border:0;
+  border-radius:8px;
+  background:linear-gradient(135deg,#397da3,#2e6a8b);
+  box-shadow:0 3px 9px rgba(57,125,163,.20);
+}
+
+.timeline:before{
+  background:#cadce4;
+}
+
+.event{
+  padding-bottom:15px;
+}
+
+.event-dot{
+  width:13px;
+  height:13px;
+  left:3px;
+  border:3px solid #fff;
+  box-shadow:0 0 0 1px #9db7c3;
+}
+
+.event code{
+  border:1px solid #dce6ea;
+  border-radius:8px;
+  background:#f7fafb;
+  padding:8px;
+}
+
+.detail-hero{
+  border:0;
+  border-radius:14px;
+  background:
+    linear-gradient(135deg,#397da3 0%,#2d6889 72%,#285b78 100%);
+  box-shadow:var(--shadow-card);
+}
+
+.detail-hero h1{
+  font-size:25px;
+  letter-spacing:-.025em;
+}
+
+.classic-graph-card{
+  width:100%;
+  max-width:720px;
+  padding:15px;
+  border:1px solid var(--border-soft);
+  outline:0;
+  border-radius:14px;
+  background:linear-gradient(180deg,#fff,#f8fafb);
+  box-shadow:var(--shadow-card);
+}
+
+.classic-graph-card h3{
+  margin:0 0 8px;
+  color:#365a6d;
+  font-size:13px;
+}
+
+.compact-panel{
+  width:100%;
+  max-width:580px;
+}
+
+.direction-donut{
+  width:285px;
+  height:205px;
+}
+
+.period-console{
+  overflow:hidden;
+  margin-bottom:14px;
+  border:1px solid var(--border-soft);
+  border-radius:12px;
+  background:#fff;
+  box-shadow:var(--shadow-soft);
+}
+
+.month-index,
+.period-center,
+.period-calendar{
+  background:#fff;
+}
+
+.year-line,
+.month-caption,
+.days-title,
+.hours-title,
+.period-prevnext{
+  background:linear-gradient(135deg,#397da3,#326e91);
+}
+
+.hours-box{
+  border-color:#c5d6de;
+  border-radius:7px;
+  overflow:hidden;
+}
+
+.month-link,
+.hour-cell,
+.day-cell{
+  transition:background .12s ease,color .12s ease;
+}
+
+
+/* DSN visual dashboard */
+
+.dsn-kpis{
+  grid-template-columns:repeat(4,minmax(150px,1fr));
+}
+
+.dsn-overview-grid{
+  display:grid;
+  grid-template-columns:minmax(360px,.85fr) minmax(440px,1.15fr);
+  gap:14px;
+}
+
+.dsn-visual-card{
+  min-height:390px;
+}
+
+.dsn-donut-wrap{
+  display:grid;
+  grid-template-columns:minmax(230px,.9fr) minmax(240px,1.1fr);
+  align-items:center;
+  gap:14px;
+  min-height:240px;
+}
+
+.dsn-donut{
+  display:block;
+  width:100%;
+  max-width:300px;
+  height:230px;
+  margin:0 auto;
+}
+
+.dsn-pie-base,
+.dsn-pie-success,
+.dsn-pie-temporary,
+.dsn-pie-permanent,
+.dsn-pie-other{
+  fill:none;
+  stroke-width:38;
+}
+
+.dsn-pie-base{
+  stroke:#edf1f3;
+}
+
+.dsn-pie-success{
+  stroke:#579b67;
+}
+
+.dsn-pie-temporary{
+  stroke:#d6a23a;
+}
+
+.dsn-pie-permanent{
+  stroke:#b8564f;
+}
+
+.dsn-pie-other{
+  stroke:#93a4ad;
+}
+
+.dsn-pie-hole{
+  fill:#fff;
+}
+
+.dsn-pie-total{
+  text-anchor:middle;
+  fill:#284f66;
+  font-size:18px;
+  font-weight:700;
+}
+
+.dsn-pie-caption{
+  text-anchor:middle;
+  fill:#82919a;
+  font-size:8px;
+}
+
+.dsn-donut-legend{
+  display:flex;
+  flex-direction:column;
+  gap:9px;
+}
+
+.dsn-legend-row{
+  display:grid;
+  grid-template-columns:minmax(130px,1fr) auto 52px;
+  align-items:center;
+  gap:10px;
+  padding:8px 9px;
+  border:1px solid #e0e8ec;
+  border-radius:9px;
+  background:#fafcfd;
+  font-size:9px;
+}
+
+.dsn-legend-row span{
+  display:flex;
+  align-items:center;
+  min-width:0;
+}
+
+.dsn-legend-row strong{
+  color:#385a6d;
+  font-size:11px;
+  font-variant-numeric:tabular-nums;
+}
+
+.dsn-legend-row em{
+  color:#7f8e96;
+  font-style:normal;
+  text-align:right;
+}
+
+.dsn-legend-dot{
+  flex:none;
+  width:9px;
+  height:9px;
+  margin-right:7px;
+  border-radius:50%;
+}
+
+.dsn-legend-success{background:#579b67}
+.dsn-legend-temporary{background:#d6a23a}
+.dsn-legend-permanent{background:#b8564f}
+.dsn-legend-other{background:#93a4ad}
+
+.dsn-meter{
+  margin-top:10px;
+  padding-top:10px;
+  border-top:1px solid #e4eaed;
+}
+
+.dsn-ranking{
+  display:flex;
+  flex-direction:column;
+  gap:9px;
+}
+
+.dsn-rank-row{
+  display:grid;
+  grid-template-columns:28px 1fr;
+  gap:9px;
+}
+
+.dsn-rank-position{
+  display:grid;
+  place-items:center;
+  width:26px;
+  height:26px;
+  border-radius:50%;
+  background:#e7f0f4;
+  color:#39708e;
+  font-size:9px;
+  font-weight:700;
+}
+
+.dsn-rank-main{
+  min-width:0;
+}
+
+.dsn-rank-head{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:9px;
+}
+
+.dsn-rank-head span{
+  min-width:0;
+  color:#657982;
+}
+
+.dsn-rank-head strong{
+  margin-left:auto;
+  color:#35596c;
+  font-size:11px;
+  font-variant-numeric:tabular-nums;
+}
+
+.dsn-rank-meta{
+  margin-top:3px;
+  color:#89969c;
+  font-size:8px;
+}
+
+
+/* Responsive visual layer */
+
+@media(max-width:1100px){
+  .app-shell{
+    grid-template-columns:215px minmax(0,1fr);
+  }
+
+  main{
+    padding:18px;
+  }
+
+  .dsn-overview-grid{
+    grid-template-columns:1fr;
+  }
+
+  .dsn-visual-card{
+    min-height:auto;
+  }
+}
+
+@media(max-width:820px){
+  .topbar{
+    height:58px;
+    padding:0 12px;
+  }
+
+  main{
+    padding:12px;
+  }
+
+  .pagehead{
+    padding:15px 16px;
+    border-radius:12px;
+  }
+
+  .pagehead h1{
+    font-size:21px;
+  }
+
+  .kpis,
+  .dsn-kpis{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+
+  .dsn-donut-wrap{
+    grid-template-columns:1fr;
+  }
+
+  .dsn-donut{
+    height:205px;
+  }
+}
+
+@media(max-width:500px){
+  .pagehead{
+    padding:13px;
+  }
+
+  .pagehead h1{
+    font-size:19px;
+  }
+
+  .kpis,
+  .dsn-kpis{
+    grid-template-columns:1fr 1fr;
+    gap:8px;
+  }
+
+  .kpi{
+    min-height:96px;
+    padding:12px;
+  }
+
+  .kpi-value{
+    font-size:22px;
+  }
+
+  .panel{
+    padding:12px;
+  }
+
+  .dsn-legend-row{
+    grid-template-columns:minmax(110px,1fr) auto 48px;
+    gap:6px;
+  }
+}
+
 @media(max-width:1100px){.period-console{grid-template-columns:102px minmax(360px,1fr) 140px}.classic-visual-grid{grid-template-columns:1fr 1fr}.classic-graph-card{width:96%}}@media(max-width:820px){.period-console{grid-template-columns:1fr}.month-index,.period-calendar{display:none}.period-center{padding-bottom:3px}.classic-visual-grid{grid-template-columns:1fr}.classic-graph-card,.compact-panel{width:100%;max-width:none}.brand-copy strong{font-size:17px}.brand-copy small{display:none}.hours-row{justify-content:flex-start}.period-prevnext{grid-template-columns:85px 1fr 85px}}@media(max-width:500px){.brand-copy strong{font-size:14px}.readonly{display:none}}
 CSS
 
 my $app=sub{
     my $env=shift; my $path=$env->{PATH_INFO}||'/'; my $p=params($env); my $prefix=request_prefix($env);
-    return [200,headers('text/css; charset=utf-8'),[$CSS]] if $path eq '/assets/app.css';
+    return [200,headers('text/css; charset=utf-8'),[encode_utf8($CSS)]] if $path eq '/assets/app.css';
     return [204,headers('text/plain'),['']] if $path eq '/favicon.ico';
     if($path eq '/api/stats'){ return json_response(200,st()->stats()); }
     if($path eq '/api/health'){ my $check=(($p->{check}||'') eq '1')?1:0; return json_response(200,st()->health_status(quick_check=>$check)); }
@@ -598,13 +1747,128 @@ my $app=sub{
         my $rows=st()->monthly_series(12); my $body=pagehead('Time','By month','Monthly activity for up to 12 months.').'<section class="panel">'.section_head('Monthly activity','Messages, rejections and detected spam').period_chart($rows,'month','Activity by month').'</section>'; return html_response(200,layout('By month',$body,$prefix,'/time/month'));
     }
     if($path eq '/messages'){
-        my $q=substr($p->{q}||'',0,200); my $rows=st()->recent_messages(q=>$q,limit=>$cfg->{WEB_PAGE_SIZE}); my $body=pagehead('Mail','Messages','Queue-ID, Message-ID, sender or recipient.').'<section class="panel"><form class="searchbar"><input name="q" value="'.h($q).'" placeholder="Search"><button>Search</button></form></section><section class="panel mt">'.msg_table($rows,$prefix).'</section>'; return html_response(200,layout('Messages',$body,$prefix,'/messages'));
+        my $period=selected_period($p);
+        my $q=substr($p->{q}||'',0,200);
+
+        my $rows=st()->recent_messages(
+            q=>$q,
+            from=>$period->{from},
+            to=>$period->{to},
+            limit=>$cfg->{WEB_PAGE_SIZE}
+        );
+
+        my $hidden=
+            '<input type="hidden" name="date" value="'.
+            h($period->{date}).
+            '">'.
+            '<input type="hidden" name="hour" value="'.
+            h($period->{hour}).
+            '">'.
+            '<input type="hidden" name="scope" value="'.
+            h($period->{scope}).
+            '">';
+
+        my $body=
+            pagehead(
+                'Mail',
+                'Messages',
+                'Queue-ID, Message-ID, sender or recipient.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<section class="panel">'.
+            '<form class="searchbar">'.
+            $hidden.
+            '<input name="q" value="'.
+            h($q).
+            '" placeholder="Search">'.
+            '<button>Search</button>'.
+            '</form>'.
+            '</section>'.
+            '<section class="panel mt">'.
+            msg_table($rows,$prefix).
+            '</section>';
+
+        return html_response(
+            200,
+            layout(
+                'Messages',
+                $body,
+                $prefix,
+                '/messages',
+                route_period($period,'/messages')
+            )
+        );
     }
     if($path =~ m{^/direction/(inbound|outbound|internal|relay|unknown)$}){
-        my $dir=$1; my %name=(inbound=>'Inbound',outbound=>'Outbound',internal=>'Internal',relay=>'Relay',unknown=>'Unclassified'); my $rows=st()->recent_messages(direction=>$dir,limit=>$cfg->{WEB_PAGE_SIZE}); my $s=st()->stats(); my $body=pagehead('Mail',$name{$dir},'Latest messages classified as '.lc($name{$dir}).'.').'<div class="kpis">'.kpi($name{$dir},$s->{$dir}||0,'cumulative total',$dir eq 'outbound'?'purple':$dir eq 'internal'?'teal':'blue').'</div><section class="panel mt">'.msg_table($rows,$prefix).'</section>'; return html_response(200,layout($name{$dir},$body,$prefix,"/direction/$dir"));
+        my $dir=$1;
+        my %name=(
+            inbound=>'Inbound',
+            outbound=>'Outbound',
+            internal=>'Internal',
+            relay=>'Relay',
+            unknown=>'Unclassified'
+        );
+
+        my $period=selected_period($p);
+
+        my $rows=st()->recent_messages(
+            direction=>$dir,
+            from=>$period->{from},
+            to=>$period->{to},
+            limit=>$cfg->{WEB_PAGE_SIZE}
+        );
+
+        my $stats=st()->stats_range(
+            $period->{from},
+            $period->{to}
+        );
+
+        my $body=
+            pagehead(
+                'Mail',
+                $name{$dir},
+                'Messages classified as '.lc($name{$dir}).'.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<div class="kpis">'.
+            kpi(
+                $name{$dir},
+                $stats->{$dir}||0,
+                'selected period',
+                $dir eq 'outbound'
+                    ? 'purple'
+                    : $dir eq 'internal'
+                    ? 'teal'
+                    : 'blue'
+            ).
+            '</div>'.
+            '<section class="panel mt">'.
+            msg_table($rows,$prefix).
+            '</section>';
+
+        return html_response(
+            200,
+            layout(
+                $name{$dir},
+                $body,
+                $prefix,
+                "/direction/$dir",
+                route_period($period,"/direction/$dir")
+            )
+        );
     }
     if($path eq '/ips'){
-        my $rows=st()->top_ips(100);
+        my $period=selected_period($p);
+
+        my $rows=st()->top_ips(
+            100,
+            $period->{from},
+            $period->{to}
+        );
         enrich_ip_rows_asn($rows);
 
         my @tr=map {
@@ -634,6 +1898,9 @@ my $app=sub{
                 'IP addresses',
                 'Combined SMTP client, authentication and TLS activity.'
             ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
             '<section class="panel">'.
             section_head(
                 'Top IP addresses',
@@ -664,36 +1931,601 @@ my $app=sub{
 
         return html_response(
             200,
-            layout('IP addresses',$body,$prefix,'/ips')
+            layout(
+                'IP addresses',
+                $body,
+                $prefix,
+                '/ips',
+                route_period($period,'/ips')
+            )
         );
     }
 
     if($path eq '/senders'){
-        my $rows=st()->top_senders(40); my $body=pagehead('Mail','Senders','Cumulative sender ranking.').'<section class="panel">'.top_table($rows,'sender','count',sub{my$r=shift;'delivered '.fmt($r->{delivered}).' · spam '.fmt($r->{spam})},'blue').'</section>'; return html_response(200,layout('Senders',$body,$prefix,'/senders'));
+        my $period=selected_period($p);
+
+        my $rows=st()->top_senders(
+            40,
+            $period->{from},
+            $period->{to}
+        );
+
+        my $body=
+            pagehead(
+                'Mail',
+                'Senders',
+                'Sender ranking for the selected period.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<section class="panel">'.
+            top_table(
+                $rows,
+                'sender',
+                'count',
+                sub {
+                    my $r=shift;
+                    return
+                        'delivered '.fmt($r->{delivered}).
+                        ' · spam '.fmt($r->{spam});
+                },
+                'blue'
+            ).
+            '</section>';
+
+        return html_response(
+            200,
+            layout(
+                'Senders',
+                $body,
+                $prefix,
+                '/senders',
+                route_period($period,'/senders')
+            )
+        );
     }
     if($path eq '/recipients'){
-        my $rows=st()->top_recipients(40); my $body=pagehead('Mail','Recipients','Cumulative recipient ranking.').'<section class="panel">'.top_table($rows,'recipient','count',sub{my$r=shift;'sent '.fmt($r->{sent})},'purple').'</section>'; return html_response(200,layout('Recipients',$body,$prefix,'/recipients'));
+        my $period=selected_period($p);
+
+        my $rows=st()->top_recipients(
+            40,
+            $period->{from},
+            $period->{to}
+        );
+
+        my $body=
+            pagehead(
+                'Mail',
+                'Recipients',
+                'Recipient ranking for the selected period.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<section class="panel">'.
+            top_table(
+                $rows,
+                'recipient',
+                'count',
+                sub {
+                    my $r=shift;
+                    return 'sent '.fmt($r->{sent});
+                },
+                'purple'
+            ).
+            '</section>';
+
+        return html_response(
+            200,
+            layout(
+                'Recipients',
+                $body,
+                $prefix,
+                '/recipients',
+                route_period($period,'/recipients')
+            )
+        );
     }
     if($path eq '/spam'){
-        my $s=st()->stats(); my $series=st()->spam_daily_series(30); my $rows=st()->recent_messages(spam=>1,limit=>$cfg->{WEB_PAGE_SIZE}); my $body=pagehead('Security','Spam','Detection is tracked separately from final MTA disposition.').'<div class="kpis">'.kpi('Detected',$s->{spam_detected},'engines','amber').kpi('Rejected',$s->{spam_rejected},'blocked','red').kpi('Delivered',$s->{spam_delivered},'accepted','green').'</div><section class="panel mt">'.section_head('Spam · 30 days','Detected, rejected and delivered').spam_chart($series).'</section><section class="panel mt">'.section_head('Messages detected as spam','Latest cases').msg_table($rows,$prefix).'</section>'; return html_response(200,layout('Spam',$body,$prefix,'/spam'));
+        my $period=selected_period($p);
+
+        my $stats=st()->stats_range(
+            $period->{from},
+            $period->{to}
+        );
+
+        my $rows=st()->recent_messages(
+            spam=>1,
+            from=>$period->{from},
+            to=>$period->{to},
+            limit=>$cfg->{WEB_PAGE_SIZE}
+        );
+
+        my $detected=0+($stats->{spam_detected}||0);
+        my $rejected=0+($stats->{spam_rejected}||0);
+        my $delivered=0+($stats->{spam_delivered}||0);
+
+        my $other=$detected-$rejected-$delivered;
+        $other=0 if $other<0;
+
+        my @parts=(
+            {
+                label=>'Rejected',
+                value=>$rejected,
+                kind=>'red'
+            },
+            {
+                label=>'Delivered',
+                value=>$delivered,
+                kind=>'green'
+            }
+        );
+
+        push @parts,{
+            label=>'Other / unresolved',
+            value=>$other,
+            kind=>'gray'
+        } if $other;
+
+        my $body=
+            pagehead(
+                'Security',
+                'Spam',
+                'Detection and final MTA disposition for the selected period.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<div class="kpis">'.
+            kpi('Detected',$detected,'selected period','amber').
+            kpi('Rejected',$rejected,'blocked','red').
+            kpi('Delivered',$delivered,'accepted','green').
+            '</div>'.
+            '<section class="panel mt">'.
+            section_head(
+                'Spam disposition',
+                'Rejected, delivered and unresolved detections'
+            ).
+            segmented_meter(\@parts).
+            '</section>'.
+            '<section class="panel mt">'.
+            section_head(
+                'Messages detected as spam',
+                'Materialized messages in the selected period'
+            ).
+            msg_table($rows,$prefix).
+            '</section>';
+
+        return html_response(
+            200,
+            layout(
+                'Spam',
+                $body,
+                $prefix,
+                '/spam',
+                route_period($period,'/spam')
+            )
+        );
     }
     if($path eq '/viruses'){
-        my $s=st()->stats(); my $v=st()->top_viruses(30); my $rows=st()->recent_messages(virus=>1,limit=>$cfg->{WEB_PAGE_SIZE}); my @tr=map{'<tr><td>'.h($_->{virus}).'</td><td>'.fmt($_->{count}).'</td></tr>'}@$v; my $body=pagehead('Security','Virus','Antivirus detections and associated messages.').'<div class="kpis">'.kpi('Detected',$s->{virus_detected},'total','red').'</div><div class="two mt"><section class="panel">'.section_head('Detections','Signature / status').simple_table(['Virus','Total'],\@tr).'</section><section class="panel"><div class="note">Clean messages are not shown here. Only antivirus states other than clean/ok are displayed.</div></section></div><section class="panel mt">'.msg_table($rows,$prefix).'</section>'; return html_response(200,layout('Virus',$body,$prefix,'/viruses'));
+        my $period=selected_period($p);
+
+        my $stats=st()->stats_range(
+            $period->{from},
+            $period->{to}
+        );
+
+        my $viruses=st()->top_viruses(
+            30,
+            $period->{from},
+            $period->{to}
+        );
+
+        my $rows=st()->recent_messages(
+            virus=>1,
+            from=>$period->{from},
+            to=>$period->{to},
+            limit=>$cfg->{WEB_PAGE_SIZE}
+        );
+
+        my @tr=map {
+            '<tr>'.
+            '<td>'.h($_->{virus}).'</td>'.
+            '<td class="num">'.fmt($_->{count}).'</td>'.
+            '</tr>'
+        } @$viruses;
+
+        my $body=
+            pagehead(
+                'Security',
+                'Virus',
+                'Antivirus detections for the selected period.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<div class="kpis">'.
+            kpi(
+                'Detected',
+                $stats->{virus_detected},
+                'selected period',
+                'red'
+            ).
+            '</div>'.
+            '<div class="two mt">'.
+            '<section class="panel">'.
+            section_head(
+                'Detections',
+                'Signature / status'
+            ).
+            simple_table(
+                ['Virus','Total'],
+                \@tr
+            ).
+            '</section>'.
+            '<section class="panel">'.
+            '<div class="note">'.
+            'Clean messages are not shown here. '.
+            'Only antivirus states other than clean/ok are displayed.'.
+            '</div>'.
+            '</section>'.
+            '</div>'.
+            '<section class="panel mt">'.
+            section_head(
+                'Detected messages',
+                'Materialized records in the selected period'
+            ).
+            msg_table($rows,$prefix).
+            '</section>';
+
+        return html_response(
+            200,
+            layout(
+                'Virus',
+                $body,
+                $prefix,
+                '/viruses',
+                route_period($period,'/viruses')
+            )
+        );
     }
     if($path eq '/rejects'){
-        my $s=st()->stats(); my $rej=st()->top_reject_reasons(30); my $rows=st()->recent_messages(rejected=>1,limit=>$cfg->{WEB_PAGE_SIZE}); my @tr=map{'<tr><td>'.h($_->{type}).'</td><td class="sendercell">'.h($_->{reason}).'</td><td>'.fmt($_->{count}).'</td></tr>'}@$rej; my $body=pagehead('Security','Rejections','SMTP, DNSBL, milter and final-disposition decisions.').'<div class="kpis">'.kpi('Rejected',$s->{rejected},'messages','red').kpi('SMTP',$s->{smtp_rejected},'events','red').kpi('DNSBL',$s->{dnsbl_rejected},'Postscreen','purple').'</div><section class="panel mt">'.section_head('Top reasons','Rejection events').simple_table(['Type','Reason','Total'],\@tr).'</section><section class="panel mt">'.section_head('Rejected messages','Materialized records').msg_table($rows,$prefix).'</section>'; return html_response(200,layout('Rejections',$body,$prefix,'/rejects'));
+        my $period=selected_period($p);
+
+        my $stats=st()->stats_range(
+            $period->{from},
+            $period->{to}
+        );
+
+        my $rejects=st()->top_reject_reasons(
+            30,
+            $period->{from},
+            $period->{to}
+        );
+
+        my $rows=st()->recent_messages(
+            rejected=>1,
+            from=>$period->{from},
+            to=>$period->{to},
+            limit=>$cfg->{WEB_PAGE_SIZE}
+        );
+
+        my @tr=map {
+            '<tr>'.
+            '<td>'.h($_->{type}).'</td>'.
+            '<td class="sendercell">'.h($_->{reason}).'</td>'.
+            '<td class="num">'.fmt($_->{count}).'</td>'.
+            '</tr>'
+        } @$rejects;
+
+        my $body=
+            pagehead(
+                'Security',
+                'Rejections',
+                'SMTP, DNSBL, milter and final-disposition decisions.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<div class="kpis">'.
+            kpi('Rejected',$stats->{rejected},'messages','red').
+            kpi('SMTP',$stats->{smtp_rejected},'events','red').
+            kpi('DNSBL',$stats->{dnsbl_rejected},'Postscreen','purple').
+            '</div>'.
+            '<section class="panel mt">'.
+            section_head(
+                'Top reasons',
+                'Rejection events in the selected period'
+            ).
+            simple_table(
+                ['Type','Reason','Total'],
+                \@tr
+            ).
+            '</section>'.
+            '<section class="panel mt">'.
+            section_head(
+                'Rejected messages',
+                'Materialized records in the selected period'
+            ).
+            msg_table($rows,$prefix).
+            '</section>';
+
+        return html_response(
+            200,
+            layout(
+                'Rejections',
+                $body,
+                $prefix,
+                '/rejects',
+                route_period($period,'/rejects')
+            )
+        );
     }
     if($path eq '/auth'){
-        my $a=st()->auth_stats(); my($ok,$fail)=(0,0); for(@$a){$_->{success}?($ok+=$_->{count}||0):($fail+=$_->{count}||0)} my $meter=segmented_meter([{label=>'Successful',value=>$ok,kind=>'green'},{label=>'Failures',value=>$fail,kind=>'red'}]); my @tr=map{'<tr><td>'.h($_->{source}).'</td><td>'.h($_->{protocol}).'</td><td>'.h($_->{method}).'</td><td>'.($_->{success}?badge('OK','good'):badge('Failure','bad')).'</td><td>'.fmt($_->{count}).'</td></tr>'}@$a; my $body=pagehead('Security','Authentication','SMTP and Dovecot grouped by protocol and method.').'<div class="two"><section class="panel">'.section_head('Result','Successes versus failures').$meter.'</section><section class="panel"><div class="statlist"><div class="statbox"><div class="n">'.fmt($ok).'</div><div class="t">Successful</div></div><div class="statbox"><div class="n">'.fmt($fail).'</div><div class="t">Failures</div></div></div></section></div><section class="panel mt">'.simple_table(['Source','Protocol','Method','Result','Total'],\@tr).'</section>'; return html_response(200,layout('Authentication',$body,$prefix,'/auth'));
+        my $period=selected_period($p);
+        my $a=st()->auth_stats(
+            $period->{from},
+            $period->{to}
+        );
+
+        my($ok,$fail)=(0,0);
+
+        for(@$a){
+            $_->{success}
+                ? ($ok += $_->{count}||0)
+                : ($fail += $_->{count}||0);
+        }
+
+        my $meter=segmented_meter([
+            {
+                label=>'Successful',
+                value=>$ok,
+                kind=>'green'
+            },
+            {
+                label=>'Failures',
+                value=>$fail,
+                kind=>'red'
+            }
+        ]);
+
+        my @tr=map {
+            '<tr>'.
+            '<td>'.h($_->{source}).'</td>'.
+            '<td>'.h($_->{protocol}).'</td>'.
+            '<td>'.h($_->{method}).'</td>'.
+            '<td>'.
+                ($_->{success}
+                    ? badge('OK','good')
+                    : badge('Failure','bad')).
+            '</td>'.
+            '<td class="num">'.fmt($_->{count}).'</td>'.
+            '</tr>'
+        } @$a;
+
+        my $body=
+            pagehead(
+                'Security',
+                'Authentication',
+                'SMTP and Dovecot grouped by protocol and method.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<div class="two">'.
+            '<section class="panel">'.
+            section_head(
+                'Result',
+                'Successes versus failures'
+            ).
+            $meter.
+            '</section>'.
+            '<section class="panel">'.
+            '<div class="statlist">'.
+            '<div class="statbox">'.
+            '<div class="n">'.fmt($ok).'</div>'.
+            '<div class="t">Successful</div>'.
+            '</div>'.
+            '<div class="statbox">'.
+            '<div class="n">'.fmt($fail).'</div>'.
+            '<div class="t">Failures</div>'.
+            '</div>'.
+            '</div>'.
+            '</section>'.
+            '</div>'.
+            '<section class="panel mt">'.
+            simple_table(
+                [
+                    'Source',
+                    'Protocol',
+                    'Method',
+                    'Result',
+                    'Total'
+                ],
+                \@tr
+            ).
+            '</section>';
+
+        return html_response(
+            200,
+            layout(
+                'Authentication',
+                $body,
+                $prefix,
+                '/auth',
+                {
+                    date=>$period->{date},
+                    hour=>$period->{hour},
+                    scope=>$period->{scope},
+                    route=>'/auth'
+                }
+            )
+        );
     }
     if($path eq '/tls'){
-        my $t=st()->tls_stats(); my @parts; my @colors=qw(blue purple teal gray); my $i=0; for my $r(@$t){push @parts,{label=>($r->{direction}||'unknown').'/'.($r->{protocol}||'unknown'),value=>$r->{count}||0,kind=>$colors[$i++%@colors]}} my @tr=map{'<tr><td>'.h($_->{direction}).'</td><td>'.h($_->{protocol}).'</td><td>'.fmt($_->{count}).'</td></tr>'}@$t; my $body=pagehead('Security','TLS','Encrypted connections by direction and protocol version.').'<section class="panel">'.segmented_meter(\@parts).'</section><section class="panel mt">'.simple_table(['Direction','Protocol','Total'],\@tr).'</section>'; return html_response(200,layout('TLS',$body,$prefix,'/tls'));
+        my $period=selected_period($p);
+        my $t=st()->tls_stats(
+            $period->{from},
+            $period->{to}
+        );
+
+        my @parts;
+        my @colors=qw(blue purple teal gray);
+        my $i=0;
+
+        for my $r(@$t){
+            push @parts,{
+                label=>
+                    ($r->{direction}||'unknown').
+                    '/'.
+                    ($r->{protocol}||'unknown'),
+                value=>$r->{count}||0,
+                kind=>$colors[$i++%@colors]
+            };
+        }
+
+        my @tr=map {
+            '<tr>'.
+            '<td>'.h($_->{direction}).'</td>'.
+            '<td>'.h($_->{protocol}).'</td>'.
+            '<td class="num">'.fmt($_->{count}).'</td>'.
+            '</tr>'
+        } @$t;
+
+        my $body=
+            pagehead(
+                'Security',
+                'TLS',
+                'Encrypted connections by direction and protocol version.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<section class="panel">'.
+            segmented_meter(\@parts).
+            '</section>'.
+            '<section class="panel mt">'.
+            simple_table(
+                ['Direction','Protocol','Total'],
+                \@tr
+            ).
+            '</section>';
+
+        return html_response(
+            200,
+            layout(
+                'TLS',
+                $body,
+                $prefix,
+                '/tls',
+                {
+                    date=>$period->{date},
+                    hour=>$period->{hour},
+                    scope=>$period->{scope},
+                    route=>'/tls'
+                }
+            )
+        );
     }
     if($path eq '/rspamd'){
-        my $r=st()->rspamd_native_stats(); my $e=st()->engine_stats(); my $settings=top_table($r->{settings}||[],'settings_id','count',undef,'purple'); my $forced=top_table($r->{forced}||[],'forced_action','count',undef,'red'); my @actions=map{'<tr><td>'.h($_->{action}).'</td><td>'.fmt($_->{count}).'</td></tr>'}@{$e->{rspamd}||[]}; my $body=pagehead('Security','Rspamd','Native log: actions, settings and force_actions.').'<div class="kpis">'.kpi('Native scans',$r->{scans},'rspamd.log','purple').'</div><div class="two mt"><section class="panel">'.section_head('Settings','Applied profiles').$settings.'</section><section class="panel">'.section_head('Forced actions','Forced actions').$forced.'</section></div><section class="panel mt">'.section_head('Final actions','Per-message summary').simple_table(['Action','Total'],\@actions).'</section>'; return html_response(200,layout('Rspamd',$body,$prefix,'/rspamd'));
+        my $period=selected_period($p);
+
+        my $native=st()->rspamd_native_stats(
+            $period->{from},
+            $period->{to}
+        );
+
+        my $engines=st()->engine_stats(
+            $period->{from},
+            $period->{to}
+        );
+
+        my $settings=top_table(
+            $native->{settings}||[],
+            'settings_id',
+            'count',
+            undef,
+            'purple'
+        );
+
+        my $forced=top_table(
+            $native->{forced}||[],
+            'forced_action',
+            'count',
+            undef,
+            'red'
+        );
+
+        my @actions=map {
+            '<tr>'.
+            '<td>'.h($_->{action}).'</td>'.
+            '<td class="num">'.fmt($_->{count}).'</td>'.
+            '</tr>'
+        } @{$engines->{rspamd}||[]};
+
+        my $body=
+            pagehead(
+                'Security',
+                'Rspamd',
+                'Native actions, settings and force_actions for the selected period.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<div class="kpis">'.
+            kpi(
+                'Native scans',
+                $native->{scans},
+                'rspamd.log',
+                'purple'
+            ).
+            '</div>'.
+            '<div class="two mt">'.
+            '<section class="panel">'.
+            section_head('Settings','Applied profiles').
+            $settings.
+            '</section>'.
+            '<section class="panel">'.
+            section_head('Forced actions','Forced actions').
+            $forced.
+            '</section>'.
+            '</div>'.
+            '<section class="panel mt">'.
+            section_head(
+                'Final actions',
+                'Per-message summary for the selected period'
+            ).
+            simple_table(
+                ['Action','Total'],
+                \@actions
+            ).
+            '</section>';
+
+        return html_response(
+            200,
+            layout(
+                'Rspamd',
+                $body,
+                $prefix,
+                '/rspamd',
+                route_period($period,'/rspamd')
+            )
+        );
     }
     if($path eq '/dsn'){
-        my $d=st()->dsn_stats();
+        my $period=selected_period($p);
+
+        my $d=st()->dsn_stats(
+            $period->{from},
+            $period->{to}
+        );
+
+        my $s=st()->stats_range(
+            $period->{from},
+            $period->{to}
+        );
+
         my($success,$temporary,$permanent)=(0,0,0);
 
         for my $r (@$d) {
@@ -705,39 +2537,299 @@ my $app=sub{
             $permanent += $count if $code =~ /^5\./;
         }
 
-        my @tr=map{
-            '<tr><td>'.h($_->{status}).'</td><td>'.fmt($_->{count}).'</td></tr>'
-        } @$d;
+        my $total=0+($s->{dsn_events}||0);
+        my $classified=$success+$temporary+$permanent;
+        my $other=$total-$classified;
+        $other=0 if $other<0;
 
-        my $s=st()->stats();
+        my @parts=(
+            {
+                label=>'Success 2.x.x',
+                value=>$success,
+                kind=>'green'
+            },
+            {
+                label=>'Temporary 4.x.x',
+                value=>$temporary,
+                kind=>'amber'
+            },
+            {
+                label=>'Permanent 5.x.x',
+                value=>$permanent,
+                kind=>'red'
+            }
+        );
+
+        push @parts,{
+            label=>'Legacy / other',
+            value=>$other,
+            kind=>'gray'
+        } if $other;
+
+        my @tr=map {
+            my $code=$_->{status}//'';
+            my $count=0+($_->{count}||0);
+
+            my($meaning,$badge_kind)=
+                dsn_code_visual($code);
+
+            '<tr>'.
+            '<td>'.badge($code||'unknown',$badge_kind).'</td>'.
+            '<td>'.h($meaning).'</td>'.
+            '<td class="num">'.fmt($count).'</td>'.
+            '<td class="num">'.h(pct($count,$total||1)).'</td>'.
+            '</tr>'
+        } @$d;
 
         my $body=
             pagehead(
                 'Messaging',
                 'Delivery status / DSN',
-                'Enhanced delivery-status codes recorded for recipient delivery attempts.'
-            )
-            .'<div class="kpis">'
-            .kpi('DSN events',$s->{dsn_events},'cumulative','teal')
-            .kpi('Success 2.x.x',$success,'successful','green')
-            .kpi('Temporary 4.x.x',$temporary,'temporary failure','amber')
-            .kpi('Permanent 5.x.x',$permanent,'permanent failure','red')
-            .'</div>'
-            .'<section class="panel mt">'
-            .simple_table(['DSN code / status','Total'],\@tr)
-            .'</section>';
+                'Enhanced delivery-status codes for recipient delivery attempts.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+
+            '<div class="kpis dsn-kpis">'.
+            kpi(
+                'DSN events',
+                $total,
+                'recipient delivery attempts',
+                'teal'
+            ).
+            kpi(
+                'Success 2.x.x',
+                $success,
+                'successful · '.pct($success,$total||1),
+                'green'
+            ).
+            kpi(
+                'Temporary 4.x.x',
+                $temporary,
+                'retryable · '.pct($temporary,$total||1),
+                'amber'
+            ).
+            kpi(
+                'Permanent 5.x.x',
+                $permanent,
+                'failed · '.pct($permanent,$total||1),
+                'red'
+            ).
+            '</div>'.
+
+            '<div class="dsn-overview-grid mt">'.
+
+            '<section class="panel dsn-visual-card">'.
+            section_head(
+                'Delivery health',
+                'Distribution of enhanced delivery-status classes'
+            ).
+            dsn_visual_donut(
+                $success,
+                $temporary,
+                $permanent,
+                $other
+            ).
+            '<div class="dsn-meter">'.
+            segmented_meter(\@parts).
+            '</div>'.
+            '</section>'.
+
+            '<section class="panel dsn-visual-card">'.
+            section_head(
+                'Most frequent codes',
+                'Top enhanced delivery-status values'
+            ).
+            dsn_code_ranking($d,$total).
+            '</section>'.
+
+            '</div>'.
+
+            '<section class="panel mt">'.
+            section_head(
+                'All delivery-status codes',
+                'Code, status class, total and share of recorded DSN events'
+            ).
+            simple_table(
+                [
+                    'DSN code',
+                    'Meaning',
+                    'Total',
+                    'Share'
+                ],
+                \@tr
+            ).
+            '</section>';
 
         return html_response(
             200,
-            layout('Delivery status / DSN',$body,$prefix,'/dsn')
+            layout(
+                'Delivery status / DSN',
+                $body,
+                $prefix,
+                '/dsn',
+                route_period($period,'/dsn')
+            )
         );
     }
 
     if($path eq '/status'){
-        my $s=st()->stats(); my $flow=segmented_meter([{label=>'Inbound',value=>$s->{inbound}||0,kind=>'blue'},{label=>'Outbound',value=>$s->{outbound}||0,kind=>'purple'},{label=>'Internal',value=>$s->{internal}||0,kind=>'teal'},{label=>'Relay',value=>$s->{relay}||0,kind=>'gray'}]); my $body=pagehead('Messaging','Status / Flow','Cumulative traffic distribution and final status.').'<div class="kpis">'.kpi('Messages',$s->{messages},'total','blue').kpi('Deliveries',$s->{delivered},'recipients','green').kpi('Rejections',$s->{rejected},'messages','red').kpi('Deferred',$s->{deferred},'pending','amber').kpi('Bounced',$s->{bounced},'bounced','red').kpi('Relay',$s->{relay},'transit','teal').'</div><section class="panel mt">'.section_head('Flow direction','Cumulative distribution').$flow.'</section>'; return html_response(200,layout('Status / Flow',$body,$prefix,'/status'));
+        my $period=selected_period($p);
+
+        my $stats=st()->stats_range(
+            $period->{from},
+            $period->{to}
+        );
+
+        my $flow=segmented_meter([
+            {
+                label=>'Inbound',
+                value=>$stats->{inbound}||0,
+                kind=>'blue'
+            },
+            {
+                label=>'Outbound',
+                value=>$stats->{outbound}||0,
+                kind=>'purple'
+            },
+            {
+                label=>'Internal',
+                value=>$stats->{internal}||0,
+                kind=>'teal'
+            },
+            {
+                label=>'Relay',
+                value=>$stats->{relay}||0,
+                kind=>'gray'
+            },
+            {
+                label=>'Unclassified',
+                value=>$stats->{unknown}||0,
+                kind=>'amber'
+            }
+        ]);
+
+        my $body=
+            pagehead(
+                'Messaging',
+                'Status / Flow',
+                'Traffic distribution and final status for the selected period.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<div class="kpis">'.
+            kpi('Messages',$stats->{messages},'selected period','blue').
+            kpi('Deliveries',$stats->{delivered},'recipients','green').
+            kpi('Rejections',$stats->{rejected},'messages','red').
+            kpi('Deferred',$stats->{deferred},'pending','amber').
+            kpi('Bounced',$stats->{bounced},'bounced','red').
+            kpi('Relay',$stats->{relay},'transit','teal').
+            '</div>'.
+            '<section class="panel mt">'.
+            section_head(
+                'Flow direction',
+                'Distribution for the selected period'
+            ).
+            $flow.
+            '</section>';
+
+        return html_response(
+            200,
+            layout(
+                'Status / Flow',
+                $body,
+                $prefix,
+                '/status',
+                route_period($period,'/status')
+            )
+        );
     }
     if($path eq '/security'){
-        my $s=st()->stats(); my $body=pagehead('Security','Security overview','Direct access to each engine and control area.').'<div class="category-grid"><a class="category-card" href="'.h(u($prefix,'/spam')).'"><strong>Spam</strong><span>Detection, rejection and delivery</span><b>'.fmt($s->{spam_detected}).'</b></a><a class="category-card" href="'.h(u($prefix,'/viruses')).'"><strong>Virus</strong><span>Antivirus and signatures</span><b>'.fmt($s->{virus_detected}).'</b></a><a class="category-card" href="'.h(u($prefix,'/rejects')).'"><strong>Rejections</strong><span>SMTP, DNSBL and Milter</span><b>'.fmt($s->{rejected}).'</b></a><a class="category-card" href="'.h(u($prefix,'/auth')).'"><strong>Authentication</strong><span>SMTP / Dovecot</span><b>'.fmt($s->{auth_failures}).' failures</b></a><a class="category-card" href="'.h(u($prefix,'/tls')).'"><strong>TLS</strong><span>Versions and direction</span><b>'.fmt($s->{tls_connections}).'</b></a><a class="category-card" href="'.h(u($prefix,'/rspamd')).'"><strong>Rspamd</strong><span>Settings and force_actions</span><b>Details</b></a></div>'; return html_response(200,layout('Security',$body,$prefix,'/security'));
+        my $period=selected_period($p);
+
+        my $stats=st()->stats_range(
+            $period->{from},
+            $period->{to}
+        );
+
+        my $rspamd=st()->rspamd_native_stats(
+            $period->{from},
+            $period->{to}
+        );
+
+        my $body=
+            pagehead(
+                'Security',
+                'Security overview',
+                'Security activity for the selected period.'
+            ).
+            '<div class="report-scope">'.
+            h($period->{label}).
+            '</div>'.
+            '<div class="category-grid">'.
+
+            '<a class="category-card" href="'.
+            h(u($prefix,period_path('/spam',$period))).
+            '">'.
+            '<strong>Spam</strong>'.
+            '<span>Detection, rejection and delivery</span>'.
+            '<b>'.fmt($stats->{spam_detected}).'</b>'.
+            '</a>'.
+
+            '<a class="category-card" href="'.
+            h(u($prefix,period_path('/viruses',$period))).
+            '">'.
+            '<strong>Virus</strong>'.
+            '<span>Antivirus and signatures</span>'.
+            '<b>'.fmt($stats->{virus_detected}).'</b>'.
+            '</a>'.
+
+            '<a class="category-card" href="'.
+            h(u($prefix,period_path('/rejects',$period))).
+            '">'.
+            '<strong>Rejections</strong>'.
+            '<span>SMTP, DNSBL and Milter</span>'.
+            '<b>'.fmt($stats->{rejected}).'</b>'.
+            '</a>'.
+
+            '<a class="category-card" href="'.
+            h(u($prefix,period_path('/auth',$period))).
+            '">'.
+            '<strong>Authentication</strong>'.
+            '<span>SMTP / Dovecot</span>'.
+            '<b>'.fmt($stats->{auth_failures}).' failures</b>'.
+            '</a>'.
+
+            '<a class="category-card" href="'.
+            h(u($prefix,period_path('/tls',$period))).
+            '">'.
+            '<strong>TLS</strong>'.
+            '<span>Versions and direction</span>'.
+            '<b>'.fmt($stats->{tls_connections}).'</b>'.
+            '</a>'.
+
+            '<a class="category-card" href="'.
+            h(u($prefix,period_path('/rspamd',$period))).
+            '">'.
+            '<strong>Rspamd</strong>'.
+            '<span>Settings and force_actions</span>'.
+            '<b>'.fmt($rspamd->{scans}).' scans</b>'.
+            '</a>'.
+
+            '</div>';
+
+        return html_response(
+            200,
+            layout(
+                'Security',
+                $body,
+                $prefix,
+                '/security',
+                route_period($period,'/security')
+            )
+        );
     }
     if($path =~ m{^/message/([A-Za-z0-9._-]+)$}){
         my $m=st()->message_detail($1); return html_response(404,layout('Not found',pagehead('Message','Not found','The requested Queue-ID does not exist.'),$prefix,'/messages')) if !$m; my($status,$kind)=msg_status($m); my $shown=$m->{display_queue_id}||$m->{queue_id}; my $rc=join '<br>',map{h($_->{recipient}).' '.badge($_->{status}||'','neutral')}@{$m->{recipients}}; my $events=join '',map{timeline_event_html($_)}@{$m->{events}}; my $body='<section class="panel detail-hero"><div class="eyebrow">Correlated detail</div><h1>'.h($shown).'</h1><p>'.h($m->{message_id}||'No Message-ID').'</p><div>'.badge($status,$kind).' '.badge($m->{direction}||'unknown','blue').'</div></section><div class="info-grid mt"><section class="panel">'.section_head('Flow','Identity and deliveries').'<dl class="kv"><dt>Sender</dt><dd>'.h($m->{sender}).'</dd><dt>Recipients</dt><dd>'.$rc.'</dd><dt>Client</dt><dd>'.h(($m->{client_host}||'').' '.($m->{client_ip}||'')).'</dd><dt>Size</dt><dd>'.fmt($m->{size}).' bytes</dd><dt>Deliveries</dt><dd>'.fmt($m->{delivered_count}).'</dd><dt>Rejection reason</dt><dd>'.h($m->{reject_reason}||'—').'</dd></dl></section><section class="panel">'.section_head('Security','Engines').'<dl class="kv"><dt>Spam</dt><dd>'.($m->{spam_detected}?badge('detected','warn'):badge('no','good')).'</dd><dt>SpamAssassin</dt><dd>'.h(defined$m->{sa_score}?$m->{sa_score}:'—').'</dd><dt>Rspamd</dt><dd>'.h(($m->{rspamd_action}||'—').' '.(defined$m->{rspamd_score}?$m->{rspamd_score}:'')).'</dd><dt>DKIM</dt><dd>'.h($m->{dkim_result}||'—').'</dd><dt>DMARC</dt><dd>'.h($m->{dmarc_result}||'—').'</dd><dt>Antivirus</dt><dd>'.h($m->{av_status}||'—').'</dd></dl></section></div><section class="panel mt">'.section_head('Timeline','Correlated events').'<div class="timeline">'.$events.'</div></section>'; return html_response(200,layout('Message '.$shown,$body,$prefix,'/messages'));

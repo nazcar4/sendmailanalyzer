@@ -1,5 +1,25 @@
 # SendmailAnalyzer 10 changelog
 
+## Debian revision 10.0.16-21 — visual refresh and period-aware reporting
+
+- Refresh the complete reporting interface while preserving the established
+  blue/gold identity and fully server-rendered, JavaScript-free architecture.
+- Improve visual hierarchy, report cards, rankings, tables, semantic badges,
+  responsive behavior and Delivery status / DSN presentation.
+- Preserve the current report when navigating by hour, day or month and make
+  those selectors apply real bounded statistics rather than cosmetic URLs.
+- Add period-aware reporting to Messages, traffic directions, IPs, senders,
+  recipients, Spam, Virus, Delivery status / DSN, Rejections, Status / Flow,
+  Authentication, TLS, Rspamd and the Security overview.
+- Keep Health deliberately current-state only, without a misleading historical
+  period selector.
+- Extend SQLite reporting helpers with bounded Authentication, TLS, rejection,
+  security-engine, Rspamd, virus and DSN queries.
+- Respect exact-hour legacy aggregate boundaries and retain native/legacy DSN
+  compatibility without double counting.
+- Add regression coverage for route preservation, period semantics, UTF-8 CSS,
+  visual DSN components and semantic meter colours.
+
 ## Debian revision 10.0.16-20 — native DSN reporting
 
 - Fix the Delivery status / DSN dashboard to count native Postfix enhanced

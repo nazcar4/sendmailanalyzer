@@ -17,6 +17,13 @@ rejected the message.
 
 ## Current revision
 
+`10.0.16-21` refreshes the reporting interface and makes period navigation
+consistent across the application. Hour, day and month selections now preserve
+the active report and apply real bounded statistics to mail, security,
+authentication, TLS, Rspamd and delivery-status views. Health remains a
+current-state diagnostic, while the web interface stays fully server-rendered
+without JavaScript or inline styles.
+
 `10.0.16-20` fixes native Postfix DSN reporting, preserves legacy DSN
 statistics without double counting, and adds grouped 2.x.x, 4.x.x and 5.x.x
 delivery-status summaries to the web dashboard.

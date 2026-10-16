@@ -76,7 +76,7 @@ $dbh->do(
     },
     undef,
     '2026-10-16',
-    '',
+    '10',
     'dsn_events',
     'legacy-aggregate',
     2
@@ -112,6 +112,45 @@ is(
     'native DSN outside selected day remains outside range'
 );
 
+my $hour10=$s->stats_range(
+    '2026-10-16T10:00:00',
+    '2026-10-16T10:59:59.999999'
+);
+
+is(
+    $hour10->{dsn_events},
+    6,
+    'hourly DSN total uses only matching-hour legacy aggregate'
+);
+
+my $hour10_rows=$s->dsn_stats(
+    '2026-10-16T10:00:00',
+    '2026-10-16T10:59:59.999999'
+);
+
+my $hour10_sum=0;
+$hour10_sum += $_->{count} for @$hour10_rows;
+
+is(
+    $hour10_sum,
+    6,
+    'hourly dsn_stats includes only matching-hour legacy aggregate'
+);
+
+my $hour11_rows=$s->dsn_stats(
+    '2026-10-16T11:00:00',
+    '2026-10-16T11:59:59.999999'
+);
+
+my $hour11_sum=0;
+$hour11_sum += $_->{count} for @$hour11_rows;
+
+is(
+    $hour11_sum,
+    1,
+    'hourly dsn_stats excludes legacy aggregates belonging to another hour'
+);
+
 my $rows=$s->dsn_stats();
 my %count=map {
     ($_->{status} => 0+$_->{count})
@@ -126,6 +165,57 @@ is($count{'legacy-aggregate'},2,'legacy aggregate DSN remains visible');
 ok(
     !exists $count{''},
     'empty DSN values are excluded'
+);
+
+my $day_rows=$s->dsn_stats(
+    '2026-10-16T00:00:00',
+    '2026-10-16T23:59:59'
+);
+
+my %day_count=map {
+    ($_->{status} => 0+$_->{count})
+} @$day_rows;
+
+is(
+    $day_count{'2.0.0'}||0,
+    2,
+    'bounded dsn_stats excludes native DSN records outside selected day'
+);
+
+is(
+    $day_count{'legacy-event'}||0,
+    1,
+    'bounded dsn_stats keeps explicit legacy DSN inside selected day'
+);
+
+is(
+    $day_count{'legacy-aggregate'}||0,
+    2,
+    'bounded dsn_stats keeps bounded legacy aggregate inside selected day'
+);
+
+my $day_sum=0;
+$day_sum += $_->{count} for @$day_rows;
+
+is(
+    $day_sum,
+    $day->{dsn_events},
+    'bounded dsn_stats agrees with selected-day DSN total'
+);
+
+my $before_rows=$s->dsn_stats(
+    '2026-10-15T00:00:00',
+    '2026-10-15T23:59:59'
+);
+
+my %before_count=map {
+    ($_->{status} => 0+$_->{count})
+} @$before_rows;
+
+is(
+    $before_count{'2.0.0'}||0,
+    1,
+    'bounded dsn_stats returns the previous-day native DSN independently'
 );
 
 my $sum=0;
@@ -167,8 +257,8 @@ like(
 
 like(
     $web,
-    qr/DSN code \/ status/,
-    'DSN table identifies the value as code/status'
+    qr/'DSN code',\s*'Meaning',\s*'Total',\s*'Share'/s,
+    'DSN table exposes code, meaning, total and share columns'
 );
 
 like(
@@ -263,6 +353,37 @@ is(
     $legacy_dsn_stats{'Bounced'},
     1,
     'synthetic legacy DSN status remains visible'
+);
+
+
+like(
+    $web,
+    qr/sub dsn_visual_donut/,
+    'DSN page has a server-side distribution donut'
+);
+
+like(
+    $web,
+    qr/sub dsn_code_ranking/,
+    'DSN page has a visual code ranking'
+);
+
+like(
+    $web,
+    qr/Delivery health/,
+    'DSN page exposes a delivery-health visual summary'
+);
+
+like(
+    $web,
+    qr/Most frequent codes/,
+    'DSN page exposes the most frequent DSN codes'
+);
+
+like(
+    $web,
+    qr/Legacy \/ other/,
+    'DSN visualisation keeps legacy and non-standard states explicit'
 );
 
 done_testing();

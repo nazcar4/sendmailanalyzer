@@ -1,3 +1,22 @@
+sendmailanalyzer (10.0.16-21) stable; urgency=medium
+
+  * Refresh the reporting interface with a coherent global visual design,
+    improved cards, tables, rankings, semantic states and responsive layout.
+  * Make hour, day and month navigation preserve the active report and apply
+    real bounded statistics across mail, security and delivery-status views.
+  * Add period-aware Authentication, TLS, Spam, Virus, DSN, Rejections,
+    Rspamd, Status, IP, sender, recipient and Security reporting.
+  * Preserve Health as a current-state diagnostic instead of presenting a
+    misleading historical period selector.
+  * Add bounded storage queries and exact-hour handling for legacy aggregates,
+    including native and legacy DSN statistics without double counting.
+  * Improve Delivery status / DSN with server-rendered distribution graphics,
+    ranked status codes, percentages and complete semantic colour coverage.
+  * Preserve the JavaScript-free, inline-style-free and read-only web model
+    with expanded regression coverage for period navigation and UTF-8 output.
+
+ -- Nazcar <nazcar@almogavers.net>  Fri, 16 Oct 2026 18:05:52 +0200
+
 sendmailanalyzer (10.0.16-20) stable; urgency=medium
 
   * Fix native Postfix DSN reporting by using normalized recipient delivery

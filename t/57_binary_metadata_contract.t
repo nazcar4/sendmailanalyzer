@@ -132,4 +132,19 @@ like(
     'canonical Debian build ships Debconf templates'
 );
 
+
+my $postinst=slurp("$root/debian/postinst");
+
+unlike(
+    $postinst,
+    qr/SendmailAnalyzer\s+10\.0\.16-\d+\s+production upgrade configured successfully\./,
+    'postinst success message has no hard-coded Debian revision'
+);
+
+like(
+    $postinst,
+    qr/SendmailAnalyzer production upgrade configured successfully\./,
+    'postinst has a revision-independent success message'
+);
+
 done_testing;

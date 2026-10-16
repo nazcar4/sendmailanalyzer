@@ -111,12 +111,66 @@ sub set_legacy_aggregate {
       ON CONFLICT(day,hour,metric,detail) DO UPDATE SET count=excluded.count},undef,$day,$hour,$metric,$detail,$count);
     return $count;
 }
+sub _selected_legacy_hour {
+    my ($self,$from,$to)=@_;
+
+    return undef
+        if !defined($from)
+        || !defined($to)
+        || $from eq ''
+        || $to eq '';
+
+    my($from_day,$from_hour)=
+        $from =~ /^(\d{4}-\d{2}-\d{2})T(\d{2}):/;
+
+    my($to_day,$to_hour)=
+        $to =~ /^(\d{4}-\d{2}-\d{2})T(\d{2}):/;
+
+    return undef
+        if !defined($from_day)
+        || !defined($to_day)
+        || !defined($from_hour)
+        || !defined($to_hour);
+
+    return undef
+        if $from_day ne $to_day
+        || $from_hour ne $to_hour;
+
+    return $from_hour;
+}
+
 sub _legacy_agg_sum {
-    my ($self,$metric,$from,$to)=@_; return 0 if !$metric;
-    my (@w,@b); push @w,'metric=?'; push @b,$metric;
-    if (defined($from) && $from ne '') { push @w,'day >= ?'; push @b,substr($from,0,10); }
-    if (defined($to) && $to ne '') { push @w,'day <= ?'; push @b,substr($to,0,10); }
-    my ($n)=$self->{dbh}->selectrow_array('SELECT COALESCE(SUM(count),0) FROM legacy_aggregates WHERE '.join(' AND ',@w),undef,@b);
+    my ($self,$metric,$from,$to)=@_;
+
+    return 0 if !$metric;
+
+    my @w=('metric=?');
+    my @b=($metric);
+
+    if (defined($from) && $from ne '') {
+        push @w,'day >= ?';
+        push @b,substr($from,0,10);
+    }
+
+    if (defined($to) && $to ne '') {
+        push @w,'day <= ?';
+        push @b,substr($to,0,10);
+    }
+
+    my $hour=$self->_selected_legacy_hour($from,$to);
+
+    if (defined($hour)) {
+        push @w,'hour = ?';
+        push @b,$hour;
+    }
+
+    my ($n)=$self->{dbh}->selectrow_array(
+        'SELECT COALESCE(SUM(count),0) FROM legacy_aggregates WHERE '.
+        join(' AND ',@w),
+        undef,
+        @b
+    );
+
     return 0+($n||0);
 }
 sub _legacy_agg_by_day {
@@ -749,79 +803,364 @@ sub top_recipients {
     return $self->{dbh}->selectall_arrayref("SELECT COALESCE(NULLIF(r.recipient,''),'(empty)') recipient, COUNT(*) count, SUM(CASE WHEN lower(COALESCE(r.status,''))='sent' THEN 1 ELSE 0 END) sent FROM recipients r JOIN messages m ON m.queue_id=r.queue_id $where GROUP BY r.recipient ORDER BY count DESC LIMIT ?",{Slice=>{}},@b,$limit);
 }
 sub top_reject_reasons {
-    my ($self,$limit)=@_; $limit||=20; my %x;
-    my $rows=$self->{dbh}->selectall_arrayref(q{SELECT type, COALESCE(json_extract(data_json,'$.reason'),'(no detail)') reason, COUNT(*) count FROM events WHERE type IN ('smtp_reject','dnsbl_reject','milter_reject') GROUP BY type,reason},{Slice=>{}});
-    for my $r (@$rows) { $x{join("\0",$r->{type},$r->{reason})}+=$r->{count}; }
-    my $legacy_rows=$self->{dbh}->selectall_arrayref(q{SELECT detail reason,SUM(count) count FROM legacy_aggregates WHERE metric='smtp_rejected' GROUP BY detail},{Slice=>{}});
-    for my $r (@$legacy_rows) { my $reason=$r->{reason} ne ''?$r->{reason}:'(no detail)'; $x{join("\0",'smtp_reject',$reason)}+=$r->{count}; }
-    my @out=map { my($type,$reason)=split /\0/,$_,2; {type=>$type,reason=>$reason,count=>$x{$_}} } keys %x;
-    @out=sort { $b->{count}<=>$a->{count} || $a->{type} cmp $b->{type} || $a->{reason} cmp $b->{reason} } @out;
-    splice(@out,$limit) if @out>$limit; return \@out;
-}
-sub engine_stats {
-    my ($self)=@_; return {
-      rspamd => $self->{dbh}->selectall_arrayref(q{SELECT COALESCE(rspamd_action,'(no action)') action, COUNT(*) count FROM messages WHERE rspamd_action IS NOT NULL GROUP BY rspamd_action ORDER BY count DESC},{Slice=>{}}),
-      dkim => $self->{dbh}->selectall_arrayref(q{SELECT COALESCE(dkim_result,'none') result, COUNT(*) count FROM messages GROUP BY dkim_result ORDER BY count DESC},{Slice=>{}}),
-      dmarc => $self->{dbh}->selectall_arrayref(q{SELECT COALESCE(dmarc_result,'none') result, COUNT(*) count FROM messages GROUP BY dmarc_result ORDER BY count DESC},{Slice=>{}}),
-    };
-}
+    my ($self,$limit,$from,$to)=@_;
+    $limit||=20;
 
-sub rspamd_native_stats {
-    my ($self)=@_;
-    return {
-      settings => $self->{dbh}->selectall_arrayref(q{SELECT COALESCE(json_extract(data_json,'$.settings_id'),'(default)') settings_id, COUNT(*) count FROM events WHERE source='rspamd' AND type='verdict' AND json_extract(data_json,'$.evidence')='rspamd.log' GROUP BY settings_id ORDER BY count DESC},{Slice=>{}}),
-      forced => $self->{dbh}->selectall_arrayref(q{SELECT COALESCE(json_extract(data_json,'$.forced_action'),'(none)') forced_action, COUNT(*) count FROM events WHERE source='rspamd' AND type='verdict' AND json_extract(data_json,'$.evidence')='rspamd.log' GROUP BY forced_action ORDER BY count DESC},{Slice=>{}}),
-      scans => 0 + ($self->{dbh}->selectrow_array(q{SELECT COUNT(*) FROM events WHERE source='rspamd' AND type='verdict' AND json_extract(data_json,'$.evidence')='rspamd.log'})||0),
-    };
-}
-
-sub auth_stats {
-    my ($self)=@_;
-    return $self->{dbh}->selectall_arrayref(q{SELECT source, COALESCE(protocol,'') protocol, COALESCE(method,'') method, success, COUNT(*) count FROM auth_events GROUP BY source,protocol,method,success ORDER BY count DESC},{Slice=>{}});
-}
-sub tls_stats {
-    my ($self)=@_;
-    return $self->{dbh}->selectall_arrayref(q{SELECT COALESCE(direction,'unknown') direction, COALESCE(protocol,'unknown') protocol, COUNT(*) count FROM tls_events GROUP BY direction,protocol ORDER BY count DESC},{Slice=>{}});
-}
-sub dsn_stats {
-    my ($self)=@_;
     my %x;
 
-    # Native v10 Postfix delivery events are normalized into recipients.dsn.
-    for my $r (@{$self->{dbh}->selectall_arrayref(q{
-        SELECT trim(dsn) status, COUNT(*) count
-        FROM recipients
-        WHERE dsn IS NOT NULL
-          AND trim(dsn) <> ''
-        GROUP BY trim(dsn)
-    },{Slice=>{}})}) {
+    my @ew=(
+        q{type IN ('smtp_reject','dnsbl_reject','milter_reject')}
+    );
+    my @eb;
+
+    if (defined($from) && $from ne '') {
+        push @ew,'timestamp >= ?';
+        push @eb,$from;
+    }
+
+    if (defined($to) && $to ne '') {
+        push @ew,'timestamp <= ?';
+        push @eb,$to;
+    }
+
+    my $rows=$self->{dbh}->selectall_arrayref(
+        q{SELECT type, COALESCE(json_extract(data_json,'$.reason'),'(no detail)') reason, COUNT(*) count FROM events WHERE }.
+        join(' AND ',@ew).
+        q{ GROUP BY type,reason},
+        {Slice=>{}},
+        @eb
+    );
+
+    for my $r (@$rows) {
+        $x{join("\0",$r->{type},$r->{reason})}+=$r->{count};
+    }
+
+    my @lw=(q{metric='smtp_rejected'});
+    my @lb;
+
+    if (defined($from) && $from ne '') {
+        push @lw,'day >= ?';
+        push @lb,substr($from,0,10);
+    }
+
+    if (defined($to) && $to ne '') {
+        push @lw,'day <= ?';
+        push @lb,substr($to,0,10);
+    }
+
+    my $legacy_hour=$self->_selected_legacy_hour(
+        $from,
+        $to
+    );
+
+    if (defined($legacy_hour)) {
+        push @lw,'hour = ?';
+        push @lb,$legacy_hour;
+    }
+
+    my $legacy_rows=$self->{dbh}->selectall_arrayref(
+        q{SELECT detail reason,SUM(count) count FROM legacy_aggregates WHERE }.
+        join(' AND ',@lw).
+        q{ GROUP BY detail},
+        {Slice=>{}},
+        @lb
+    );
+
+    for my $r (@$legacy_rows) {
+        my $reason=$r->{reason} ne ''
+            ? $r->{reason}
+            : '(no detail)';
+
+        $x{join("\0",'smtp_reject',$reason)}+=$r->{count};
+    }
+
+    my @out=map {
+        my($type,$reason)=split /\0/,$_,2;
+
+        {
+            type=>$type,
+            reason=>$reason,
+            count=>$x{$_}
+        }
+    } keys %x;
+
+    @out=sort {
+        $b->{count}<=>$a->{count}
+        ||
+        $a->{type} cmp $b->{type}
+        ||
+        $a->{reason} cmp $b->{reason}
+    } @out;
+
+    splice(@out,$limit) if @out>$limit;
+
+    return \@out;
+}
+sub engine_stats {
+    my ($self,$from,$to)=@_;
+
+    my @w;
+    my @b;
+
+    if (defined($from) && $from ne '') {
+        push @w,'first_seen >= ?';
+        push @b,$from;
+    }
+
+    if (defined($to) && $to ne '') {
+        push @w,'first_seen <= ?';
+        push @b,$to;
+    }
+
+    my $where=@w
+        ? ' WHERE '.join(' AND ',@w)
+        : '';
+
+    my $rspamd_where=@w
+        ? ' WHERE '.join(' AND ',@w).' AND rspamd_action IS NOT NULL'
+        : ' WHERE rspamd_action IS NOT NULL';
+
+    return {
+        rspamd=>$self->{dbh}->selectall_arrayref(
+            q{SELECT COALESCE(rspamd_action,'(no action)') action, COUNT(*) count FROM messages}.
+            $rspamd_where.
+            q{ GROUP BY rspamd_action ORDER BY count DESC},
+            {Slice=>{}},
+            @b
+        ),
+
+        dkim=>$self->{dbh}->selectall_arrayref(
+            q{SELECT COALESCE(dkim_result,'none') result, COUNT(*) count FROM messages}.
+            $where.
+            q{ GROUP BY dkim_result ORDER BY count DESC},
+            {Slice=>{}},
+            @b
+        ),
+
+        dmarc=>$self->{dbh}->selectall_arrayref(
+            q{SELECT COALESCE(dmarc_result,'none') result, COUNT(*) count FROM messages}.
+            $where.
+            q{ GROUP BY dmarc_result ORDER BY count DESC},
+            {Slice=>{}},
+            @b
+        ),
+    };
+}
+sub rspamd_native_stats {
+    my ($self,$from,$to)=@_;
+
+    my @w=(
+        q{source='rspamd'},
+        q{type='verdict'},
+        q{json_extract(data_json,'$.evidence')='rspamd.log'}
+    );
+    my @b;
+
+    if (defined($from) && $from ne '') {
+        push @w,'timestamp >= ?';
+        push @b,$from;
+    }
+
+    if (defined($to) && $to ne '') {
+        push @w,'timestamp <= ?';
+        push @b,$to;
+    }
+
+    my $where=' WHERE '.join(' AND ',@w);
+
+    return {
+        settings=>$self->{dbh}->selectall_arrayref(
+            q{SELECT COALESCE(json_extract(data_json,'$.settings_id'),'(default)') settings_id, COUNT(*) count FROM events}.
+            $where.
+            q{ GROUP BY settings_id ORDER BY count DESC},
+            {Slice=>{}},
+            @b
+        ),
+
+        forced=>$self->{dbh}->selectall_arrayref(
+            q{SELECT COALESCE(json_extract(data_json,'$.forced_action'),'(none)') forced_action, COUNT(*) count FROM events}.
+            $where.
+            q{ GROUP BY forced_action ORDER BY count DESC},
+            {Slice=>{}},
+            @b
+        ),
+
+        scans=>0+(
+            $self->{dbh}->selectrow_array(
+                q{SELECT COUNT(*) FROM events}.
+                $where,
+                undef,
+                @b
+            )||0
+        ),
+    };
+}
+sub auth_stats {
+    my ($self,$from,$to)=@_;
+
+    my @where;
+    my @bind;
+
+    if (defined($from) && $from ne '') {
+        push @where,'timestamp >= ?';
+        push @bind,$from;
+    }
+
+    if (defined($to) && $to ne '') {
+        push @where,'timestamp <= ?';
+        push @bind,$to;
+    }
+
+    my $where=@where
+        ? ' WHERE '.join(' AND ',@where)
+        : '';
+
+    return $self->{dbh}->selectall_arrayref(
+        q{SELECT source, COALESCE(protocol,'') protocol, COALESCE(method,'') method, success, COUNT(*) count FROM auth_events}.
+        $where.
+        q{ GROUP BY source,protocol,method,success ORDER BY count DESC},
+        {Slice=>{}},
+        @bind
+    );
+}
+
+sub tls_stats {
+    my ($self,$from,$to)=@_;
+
+    my @where;
+    my @bind;
+
+    if (defined($from) && $from ne '') {
+        push @where,'timestamp >= ?';
+        push @bind,$from;
+    }
+
+    if (defined($to) && $to ne '') {
+        push @where,'timestamp <= ?';
+        push @bind,$to;
+    }
+
+    my $where=@where
+        ? ' WHERE '.join(' AND ',@where)
+        : '';
+
+    return $self->{dbh}->selectall_arrayref(
+        q{SELECT COALESCE(direction,'unknown') direction, COALESCE(protocol,'unknown') protocol, COUNT(*) count FROM tls_events}.
+        $where.
+        q{ GROUP BY direction,protocol ORDER BY count DESC},
+        {Slice=>{}},
+        @bind
+    );
+}
+sub dsn_stats {
+    my ($self,$from,$to)=@_;
+
+    my %x;
+
+    my @rw=(
+        q{dsn IS NOT NULL},
+        q{trim(dsn) <> ''}
+    );
+    my @rb;
+
+    if (defined($from) && $from ne '') {
+        push @rw,'timestamp >= ?';
+        push @rb,$from;
+    }
+
+    if (defined($to) && $to ne '') {
+        push @rw,'timestamp <= ?';
+        push @rb,$to;
+    }
+
+    for my $r (@{$self->{dbh}->selectall_arrayref(
+        q{
+            SELECT trim(dsn) status, COUNT(*) count
+            FROM recipients
+            WHERE
+        }.
+        join(' AND ',@rw).
+        q{
+            GROUP BY trim(dsn)
+        },
+        {Slice=>{}},
+        @rb
+    )}) {
         $x{$r->{status}} += $r->{count};
     }
 
-    # Preserve compatibility with explicit DSN events imported from legacy data.
-    for my $r (@{$self->{dbh}->selectall_arrayref(q{
-        SELECT
-            COALESCE(
-                NULLIF(trim(json_extract(data_json,'$.status')),''),
-                'unknown'
-            ) status,
-            COUNT(*) count
-        FROM events
-        WHERE type='dsn'
-        GROUP BY status
-    },{Slice=>{}})}) {
+    my @ew=(q{type='dsn'});
+    my @eb;
+
+    if (defined($from) && $from ne '') {
+        push @ew,'timestamp >= ?';
+        push @eb,$from;
+    }
+
+    if (defined($to) && $to ne '') {
+        push @ew,'timestamp <= ?';
+        push @eb,$to;
+    }
+
+    for my $r (@{$self->{dbh}->selectall_arrayref(
+        q{
+            SELECT
+                COALESCE(
+                    NULLIF(trim(json_extract(data_json,'$.status')),''),
+                    'unknown'
+                ) status,
+                COUNT(*) count
+            FROM events
+            WHERE
+        }.
+        join(' AND ',@ew).
+        q{
+            GROUP BY status
+        },
+        {Slice=>{}},
+        @eb
+    )}) {
         $x{$r->{status}} += $r->{count};
     }
 
-    # Preserve synthetic legacy aggregates when individual records were unavailable.
-    for my $r (@{$self->{dbh}->selectall_arrayref(q{
-        SELECT
-            COALESCE(NULLIF(trim(detail),''),'unknown') status,
-            SUM(count) count
-        FROM legacy_aggregates
-        WHERE metric='dsn_events'
-        GROUP BY status
-    },{Slice=>{}})}) {
+    my @lw=(q{metric='dsn_events'});
+    my @lb;
+
+    if (defined($from) && $from ne '') {
+        push @lw,'day >= ?';
+        push @lb,substr($from,0,10);
+    }
+
+    if (defined($to) && $to ne '') {
+        push @lw,'day <= ?';
+        push @lb,substr($to,0,10);
+    }
+
+    my $legacy_hour=$self->_selected_legacy_hour(
+        $from,
+        $to
+    );
+
+    if (defined($legacy_hour)) {
+        push @lw,'hour = ?';
+        push @lb,$legacy_hour;
+    }
+
+    for my $r (@{$self->{dbh}->selectall_arrayref(
+        q{
+            SELECT
+                COALESCE(NULLIF(trim(detail),''),'unknown') status,
+                SUM(count) count
+            FROM legacy_aggregates
+            WHERE
+        }.
+        join(' AND ',@lw).
+        q{
+            GROUP BY status
+        },
+        {Slice=>{}},
+        @lb
+    )}) {
         $x{$r->{status}} += $r->{count};
     }
 
@@ -832,17 +1171,90 @@ sub dsn_stats {
             $a->{status} cmp $b->{status}
         }
         map {
-            {status=>$_,count=>$x{$_}}
+            {
+                status=>$_,
+                count=>$x{$_}
+            }
         }
         keys %x
     ];
 }
-
 sub top_viruses {
-    my ($self,$limit)=@_; $limit||=20; my %x;
-    for my $r (@{$self->{dbh}->selectall_arrayref(q{SELECT COALESCE(NULLIF(virus_name,''),COALESCE(NULLIF(av_status,''),'unknown')) virus, COUNT(*) count FROM messages WHERE lower(COALESCE(av_status,'')) NOT IN ('','clean','ok') GROUP BY virus},{Slice=>{}})}) { $x{$r->{virus}}+=$r->{count}; }
-    for my $r (@{$self->{dbh}->selectall_arrayref(q{SELECT COALESCE(NULLIF(detail,''),'unknown') virus,SUM(count) count FROM legacy_aggregates WHERE metric='virus_detected' GROUP BY virus},{Slice=>{}})}) { $x{$r->{virus}}+=$r->{count}; }
-    my @out=sort {$b->{count}<=>$a->{count}} map {{virus=>$_,count=>$x{$_}}} keys %x; splice(@out,$limit) if @out>$limit; return \@out;
+    my ($self,$limit,$from,$to)=@_;
+    $limit||=20;
+
+    my %x;
+
+    my @mw=(
+        q{lower(COALESCE(av_status,'')) NOT IN ('','clean','ok')}
+    );
+    my @mb;
+
+    if (defined($from) && $from ne '') {
+        push @mw,'first_seen >= ?';
+        push @mb,$from;
+    }
+
+    if (defined($to) && $to ne '') {
+        push @mw,'first_seen <= ?';
+        push @mb,$to;
+    }
+
+    for my $r (@{$self->{dbh}->selectall_arrayref(
+        q{SELECT COALESCE(NULLIF(virus_name,''),COALESCE(NULLIF(av_status,''),'unknown')) virus, COUNT(*) count FROM messages WHERE }.
+        join(' AND ',@mw).
+        q{ GROUP BY virus},
+        {Slice=>{}},
+        @mb
+    )}) {
+        $x{$r->{virus}} += $r->{count};
+    }
+
+    my @lw=(q{metric='virus_detected'});
+    my @lb;
+
+    if (defined($from) && $from ne '') {
+        push @lw,'day >= ?';
+        push @lb,substr($from,0,10);
+    }
+
+    if (defined($to) && $to ne '') {
+        push @lw,'day <= ?';
+        push @lb,substr($to,0,10);
+    }
+
+    my $legacy_hour=$self->_selected_legacy_hour(
+        $from,
+        $to
+    );
+
+    if (defined($legacy_hour)) {
+        push @lw,'hour = ?';
+        push @lb,$legacy_hour;
+    }
+
+    for my $r (@{$self->{dbh}->selectall_arrayref(
+        q{SELECT COALESCE(NULLIF(detail,''),'unknown') virus,SUM(count) count FROM legacy_aggregates WHERE }.
+        join(' AND ',@lw).
+        q{ GROUP BY virus},
+        {Slice=>{}},
+        @lb
+    )}) {
+        $x{$r->{virus}} += $r->{count};
+    }
+
+    my @out=sort {
+        $b->{count}<=>$a->{count}
+    } map {
+        {
+            virus=>$_,
+            count=>$x{$_}
+        }
+    } keys %x;
+
+    splice(@out,$limit) if @out>$limit;
+
+    return \@out;
 }
 sub _timestamp_epoch {
     my ($s)=@_;

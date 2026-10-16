@@ -18,4 +18,11 @@ my $decoded=decode('UTF-8',$bytes,FB_CROAK);
 is($decoded,$html,'representative HTML literals round-trip as strict UTF-8');
 is(unpack('H*',encode('UTF-8','·')),'c2b7','middle dot is encoded as C2 B7');
 
+
+like(
+    $text,
+    qr/encode_utf8\(\$CSS\)/,
+    'CSS response emits UTF-8 octets'
+);
+
 done_testing;
